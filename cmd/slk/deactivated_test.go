@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/gammons/slk/internal/avatar"
 	"github.com/gammons/slk/internal/cache"
 	"github.com/gammons/slk/internal/config"
 	"github.com/gammons/slk/internal/core"
@@ -325,4 +326,37 @@ func TestBypassingProfileObservationsRecordTheFlag(t *testing.T) {
 			t.Fatalf("sent %+v", sender.sent)
 		}
 	})
+}
+
+// resolveUser, the unresolved-DM sweep's worker, writes the flag in both of
+// its branches: a user whose name is known but whose avatar is not, and an
+// unknown user.
+func TestResolveUserPersistsAndReportsDeactivation(t *testing.T) {
+	for _, known := range []bool{true, false} {
+		name := map[bool]string{true: "name known", false: "unknown user"}[known]
+		t.Run(name, func(t *testing.T) {
+			db := newTestDB(t)
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ok":true,"user":{"id":"U1","name":"gone","deleted":true,"team_id":"T1","profile":{"display_name":"Gone"}}}`))
+			}))
+			defer srv.Close()
+			// The test client has no team ID, so the row lands in workspace "".
+			if err := db.UpsertWorkspace(cache.Workspace{ID: "", Name: "none"}); err != nil {
+				t.Fatal(err)
+			}
+			names := newUserNameStore(nil)
+			if known {
+				names.Set("U1", "Gone")
+			}
+			sender := &captureSender{}
+			resolveUser(newTestClient(t, srv), "U1", names, db, new(avatar.Cache), sender.Send)
+			if set, _ := db.DeactivatedUsers(); !set["U1"] {
+				t.Fatalf("the resolved profile's flag was not cached: %v", set)
+			}
+			if msgs := deactivatedMsgs(sender.sent); len(msgs) != 1 || msgs[0].UserID != "U1" || !msgs[0].Deactivated {
+				t.Fatalf("sent %+v", sender.sent)
+			}
+		})
+	}
 }
