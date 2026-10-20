@@ -1,6 +1,6 @@
 # Remove a link preview
 
-Status: design, not implemented.
+Status: implemented.
 
 ## Problem
 
@@ -173,3 +173,32 @@ Known limits, not changed here:
 previews), and `wiki/Tradeoffs-and-Non-Goals.md`, which lists "link
 unfurls" as a non-goal and needs rewording. AGENTS.md lists
 `Client.DeleteAttachment` and the preview-selection helper.
+
+## Implementation notes
+
+Where the code differs from, or fills in, the design above:
+
+- `core.MessageService.RemoveAttachment` takes `ids.ChannelID` and
+  `ids.MessageTS` like its neighbours (`Delete`, `Forward`), not plain
+  strings; `teamID` stays a string.
+- The prerequisite carries `changed` and `edited` as two adjacent bools on
+  `EventHandler.OnMessage` (`..., subtype string, changed, edited bool,
+  ...`). The shared field copy is `core.MessageItem.ApplyChange`; both panes
+  and the thread parent call it. `UpdateMessageInPlace` and
+  `UpdateParentInPlace` now take the changed `MessageItem`.
+- The removable-preview selection is `messages.RemovablePreviews`
+  (`internal/ui/messages/previews.go`); its `Label()` is the title, else the
+  URL.
+- "A reload of the message" ends a pending removal by comparing the message's
+  current previews (ids and URLs) with the ones the removal started from, at
+  the next `x`; there is no hook on the load path. A reload that returns the
+  same previews leaves the removal pending until the echo or the 30 seconds.
+- The prompt's confirm answers with `RemovePreviewMsg`; the re-check, the
+  pending state and the call live in `internal/ui/remove_preview.go`.
+  A call that hits the 10s timeout toasts "Removing the preview timed out,
+  check the message" and stays pending; any other failure toasts "Could not
+  remove the preview: <reason>" and clears the pending state.
+- The help golden did not change (the new binding is below the first page
+  the golden captures), so it was not re-blessed.
+- Not done, as designed: the `message_changed` echo that arrives before the
+  send's HTTP answer is still dropped (see the known limits).
