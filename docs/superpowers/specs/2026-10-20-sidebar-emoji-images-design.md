@@ -18,7 +18,7 @@ custom emoji must show their real artwork.
 | DM peer status emoji after the name (`item.Status.Glyph`) | glyph; a custom status emoji is the `💬` fallback | image of the status emoji (custom included); huddle `🎧` and text-only `💬` as images too; glyph as fallback |
 | Channel names | n/a | unchanged: Slack refuses special characters in channel names (`invalid_name_specials` on `conversations.create` / `conversations.rename`), so a channel name cannot carry an emoji |
 | Raw emoji in DM / group DM display names | glyph | unchanged (follow-up). Display names sit inside the truncated name budget, and `truncate.StringWithTail` would cut a placement in half; that needs token-aware truncation |
-| Status emoji elsewhere (message author headers, channel finder, DM header) | glyph | unchanged (follow-up) |
+| Status emoji elsewhere (message author headers, channel finder, DM header) | glyph | unchanged here; images in `2026-10-20-status-emoji-images-design.md` |
 
 Image mode is the existing process-global switch (`emoji.ImageModeActive()`:
 kitty protocol and `emoji_images = "on"`). With image mode off, or with
