@@ -65,8 +65,9 @@ The prefix is `placement + " "`. The glyph path keeps its existing
 `Sprint(token) + " "` (two spaces, since `Sprint` appends one), so text
 mode does not change.
 
-Width: the header is not truncated (see Known issues). An image is
-always `cells` wide (2 by default), where the glyph was 1 or 2.
+Width: an image is always `cells` wide (2 by default), where the glyph
+was 1 or 2. A header too long for the sidebar truncates its name and
+keeps the image whole (`2026-10-20-sidebar-header-fit-design.md`).
 
 ### DM status emoji
 
@@ -116,15 +117,6 @@ a row scrolled out of view is harmless. Closures are not stored in
 - Under a modal, `overlay.DimmedOverlay` blanks every placeholder cell
   of the dimmed background, sidebar included, so the image is hidden
   rather than drawn over the dim. Verified visually, not assumed.
-
-## Known issues (not fixed here)
-
-- A section header longer than the sidebar wraps to several lines in a
-  one-line slot (documented on `renderSectionHeaderLabel`). The 2-cell
-  image can reach that threshold one column sooner than a 1-cell glyph.
-  Word wrap breaks at spaces, and a placement holds none, so the wrap
-  cannot split the image; fixing the wrap (truncating) will need to
-  measure with `emoji.Width` and keep the image whole.
 
 ## Tests
 

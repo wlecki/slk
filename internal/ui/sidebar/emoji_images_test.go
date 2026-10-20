@@ -169,7 +169,7 @@ func TestEmojiImages_SelectedHeaderKeepsSelectedColours(t *testing.T) {
 	selectedAttrs := messages.SidebarBgANSI() + messages.SidebarFgANSI()
 
 	glyph := sectionModel("orange_book")
-	if row := selectedHeader(&glyph); !strings.Contains(row, selectedAttrs+"▾ "+emoji.CodeMap()[":orange_book:"]) {
+	if row := selectedHeader(&glyph); !strings.Contains(row, selectedAttrs+"\x1b[1m▾ "+emoji.CodeMap()[":orange_book:"]) {
 		t.Fatalf("precondition: in glyph mode the selected header is drawn in %q:\n%q", selectedAttrs, row)
 	}
 
