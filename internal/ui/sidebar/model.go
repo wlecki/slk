@@ -301,6 +301,11 @@ type Model struct {
 	// is injectable for deterministic tests; defaults to time.Now.
 	staleThreshold time.Duration
 	activeID       string
+	// deactivated is the set of user IDs whose DM and app rows are hidden.
+	// The App owns it: it is published whole and never written here, and
+	// nil shows everyone (the option is off). The active conversation is
+	// exempt, like staleness.
+	deactivated map[string]bool
 	// threadsActive reports that the Threads view is the currently
 	// displayed view in the message pane. When true (and the cursor
 	// is on a different row), the synthetic Threads row renders with
@@ -674,6 +679,19 @@ func (m *Model) SetStaleThreshold(d time.Duration) {
 	}
 	key, hadKey := m.currentCursorKey()
 	m.staleThreshold = d
+	m.rebuildFilter()
+	m.rebuildNavWithCursor(key, hadKey)
+	m.cacheValid = false
+	m.dirty()
+}
+
+// SetDeactivatedUsers sets the user IDs whose DM and app rows are hidden;
+// nil shows everyone. The map is kept, not copied, so the caller must not
+// write it afterwards. Re-runs the filter and keeps the cursor on the
+// same item.
+func (m *Model) SetDeactivatedUsers(users map[string]bool) {
+	key, hadKey := m.currentCursorKey()
+	m.deactivated = users
 	m.rebuildFilter()
 	m.rebuildNavWithCursor(key, hadKey)
 	m.cacheValid = false
@@ -1358,6 +1376,12 @@ func (m *Model) SelectByID(id string) {
 	}
 }
 
+// hidesDeactivated reports whether item is a DM or app row with a
+// deactivated peer. Group DMs have no single peer and are never hidden.
+func (m *Model) hidesDeactivated(item ChannelItem) bool {
+	return (item.Type == "dm" || item.Type == "app") && item.DMUserID != "" && m.deactivated[item.DMUserID]
+}
+
 func (m *Model) rebuildFilter() {
 	// Perf instrumentation: rebuildFilter calls readStateReader (a
 	// synchronous SQLite GetWorkspaceReadState) and runs a sort over the
@@ -1386,6 +1410,12 @@ func (m *Model) rebuildFilter() {
 	}
 	for i, item := range m.items {
 		if m.filter != "" && !strings.Contains(text.Fold(item.Name), lower) {
+			continue
+		}
+		// Deactivated peers are hidden before staleness so they stay
+		// hidden whatever their read state, starred or not. The active
+		// conversation is the only exemption.
+		if item.ID != m.activeID && m.hidesDeactivated(item) {
 			continue
 		}
 		// Staleness filter: drop items the user hasn't read in a long

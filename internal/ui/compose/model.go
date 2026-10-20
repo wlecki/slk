@@ -1042,6 +1042,12 @@ func (m *Model) MentionUsers() []mentionpicker.User {
 	return m.mentionPicker.Users()
 }
 
+// ChannelPicks returns the channel list most recently handed to SetChannels,
+// which is what "#" autocomplete offers. Intended for tests.
+func (m *Model) ChannelPicks() []channelpicker.Channel {
+	return m.channels
+}
+
 // rebuildMentionUsers recomputes the derived []mentionpicker.User
 // for the active channel and pushes it to the embedded picker.
 //
