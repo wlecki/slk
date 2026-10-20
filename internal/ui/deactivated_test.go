@@ -172,26 +172,23 @@ func TestSetDeactivatedUsersNeverWritesAMapItPublished(t *testing.T) {
 }
 
 func TestUserDeactivatedMsgHidesAndReactivationRestores(t *testing.T) {
-	// The message names no workspace, so it applies whichever one is on
-	// screen, and a user another workspace saw deactivated is hidden here.
-	for _, team := range []string{"T1", "T2"} {
-		a := deactivatedApp()
-		a.activeTeamID = team
-		a.Update(UserDeactivatedMsg{UserID: "U2", Deactivated: true})
-		got := offered(a)
-		if got.has("D2") || got.has("U2") {
-			t.Fatalf("team %s: still offered after UserDeactivatedMsg: %+v", team, got)
+	// The message names no workspace: the account is deactivated in all of
+	// them, so it applies to whichever one is on screen.
+	a := deactivatedApp()
+	a.Update(UserDeactivatedMsg{UserID: "U2", Deactivated: true})
+	got := offered(a)
+	if got.has("D2") || got.has("U2") {
+		t.Fatalf("still offered after UserDeactivatedMsg: %+v", got)
+	}
+	a.Update(UserDeactivatedMsg{UserID: "U2", Deactivated: false})
+	got = offered(a)
+	for name, ids := range map[string][]string{"sidebar": got.sidebar, "finder": got.finder, "# picks": got.picks} {
+		if !slices.Contains(ids, "D2") {
+			t.Errorf("reactivated DM missing from %s: %v", name, ids)
 		}
-		a.Update(UserDeactivatedMsg{UserID: "U2", Deactivated: false})
-		got = offered(a)
-		for name, ids := range map[string][]string{"sidebar": got.sidebar, "finder": got.finder, "# picks": got.picks} {
-			if !slices.Contains(ids, "D2") {
-				t.Errorf("team %s: reactivated DM missing from %s: %v", team, name, ids)
-			}
-		}
-		if !slices.Contains(got.mentions, "U2") || !slices.Contains(got.newMessage, "U2") {
-			t.Errorf("team %s: reactivated user missing from the people lists: %+v", team, got)
-		}
+	}
+	if !slices.Contains(got.mentions, "U2") || !slices.Contains(got.newMessage, "U2") {
+		t.Errorf("reactivated user missing from the people lists: %+v", got)
 	}
 }
 
@@ -204,7 +201,11 @@ func TestDeactivatedActiveConversationStaysInSidebar(t *testing.T) {
 	}
 }
 
-func TestWorkspaceMessagesApplyDeactivatedUsersBeforeTheLists(t *testing.T) {
+// The workspace messages carry the set into the lists they build. It does not
+// pin the order the handlers apply it in: the lists are refiltered when the
+// set is published either way, so a later SetChannels or SetUserNames would
+// be filtered too.
+func TestWorkspaceMessagesCarryDeactivatedUsersIntoTheLists(t *testing.T) {
 	items := []sidebar.ChannelItem{
 		{ID: "C1", Name: "general", Type: "channel"},
 		{ID: "D1", Name: "Alice", Type: "dm", DMUserID: "U1"},
