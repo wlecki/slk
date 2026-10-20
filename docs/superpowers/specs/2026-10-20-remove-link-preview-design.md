@@ -189,8 +189,11 @@ Where the code differs from, or fills in, the design above:
 - The removable-preview selection is `messages.RemovablePreviews`
   (`internal/ui/messages/previews.go`); its `Label()` is the title, else the
   URL.
-- The pending state names the targeted preview (its id and URL), not the
-  whole attachment list. It ends when the message no longer shows that pair:
+- The pending state names the targeted preview's URL and how many previews
+  of that URL the message showed, not the whole attachment list. It ends when
+  the message shows fewer previews of that URL (counting, not looking for the
+  (id, URL) pair, because Slack renumbers a twin of the same URL into the
+  removed one's id):
   the `message_changed` echo (an echo that still shows it, such as a text edit
   from another client or a second unfurl landing, leaves it pending), or a
   reload (checked at the next `x`, there is no hook on the load path). It also

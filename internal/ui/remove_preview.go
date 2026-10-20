@@ -48,15 +48,18 @@ type RemovePreviewMsg struct {
 	URL          string
 }
 
-// previewRemoval is one removal in flight: the preview it targets, by
-// the id and URL the prompt named. The wait ends when the message no
-// longer shows that pair (the echo, or a reload), on a failure, or after
-// previewRemovalTimeout. confirmed is set once Slack answered ok: Slack
-// has acted and the echo is only late, so the timeout no longer applies.
+// previewRemoval is one removal in flight: the URL of the preview it
+// targets, and how many previews of that URL the message showed then. The wait ends when the message shows fewer of that
+// URL (the echo, or a reload), on a failure, or after
+// previewRemovalTimeout. Counting, not looking for the (id, URL) pair,
+// handles two previews of one URL: Slack renumbers the twin into the
+// removed one's id, so the pair is still there after the removal.
+// confirmed is set once Slack answered ok: Slack has acted and the echo
+// is only late, so the timeout no longer applies.
 type previewRemoval struct {
 	started   time.Time
-	id        int
 	url       string
+	copies    int
 	confirmed bool
 }
 
@@ -72,16 +75,28 @@ func hasPreview(ps []messages.RemovablePreview, id int, url string) bool {
 	return false
 }
 
+// previewURLCount is how many of ps unfurl url.
+func previewURLCount(ps []messages.RemovablePreview, url string) int {
+	n := 0
+	for _, p := range ps {
+		if p.URL == url {
+			n++
+		}
+	}
+	return n
+}
+
 // previewRemovalState reports the removal in flight for the message, if
-// any, given its current previews. One whose targeted preview is gone is
-// over and forgotten, as is an unconfirmed one past the timeout.
+// any, given its current previews. One whose message shows fewer previews
+// of the targeted URL is over and forgotten, as is an unconfirmed one past
+// the timeout.
 func (a *App) previewRemovalState(channelID, ts string, previews []messages.RemovablePreview) (r previewRemoval, ok bool) {
 	k := previewRemovalKey(channelID, ts)
 	r, ok = a.previewRemovals[k]
 	if !ok {
 		return previewRemoval{}, false
 	}
-	if !hasPreview(previews, r.id, r.url) || (!r.confirmed && a.now().Sub(r.started) >= previewRemovalTimeout) {
+	if previewURLCount(previews, r.url) < r.copies || (!r.confirmed && a.now().Sub(r.started) >= previewRemovalTimeout) {
 		delete(a.previewRemovals, k)
 		return previewRemoval{}, false
 	}
@@ -97,16 +112,21 @@ func previewRemovalToast(r previewRemoval) string {
 	return "Removing preview…"
 }
 
-func (a *App) startPreviewRemoval(channelID, ts string, p messages.RemovablePreview) {
+// startPreviewRemoval records a removal of p from a message currently
+// showing previews.
+func (a *App) startPreviewRemoval(channelID, ts string, p messages.RemovablePreview, previews []messages.RemovablePreview) {
 	if a.previewRemovals == nil {
 		a.previewRemovals = map[string]previewRemoval{}
 	}
-	a.previewRemovals[previewRemovalKey(channelID, ts)] = previewRemoval{started: a.now(), id: p.AttachmentID, url: p.URL}
+	a.previewRemovals[previewRemovalKey(channelID, ts)] = previewRemoval{
+		started: a.now(), url: p.URL, copies: previewURLCount(previews, p.URL),
+	}
 }
 
-// previewRemovalEchoed ends the wait for a message whose change echo no
-// longer shows the targeted preview. An echo that still shows it (a text
-// edit from another client, a second unfurl landing) leaves it pending.
+// previewRemovalEchoed ends the wait for a message whose change echo shows
+// fewer previews of the targeted URL. An echo that still shows as many (a
+// text edit from another client, a second unfurl landing) leaves it
+// pending.
 func (a *App) previewRemovalEchoed(channelID string, echo messages.MessageItem) {
 	a.previewRemovalState(channelID, echo.TS, messages.RemovablePreviews(echo))
 }
@@ -177,7 +197,7 @@ func (a *App) removePreview(m RemovePreviewMsg) tea.Cmd {
 	if r, pending := a.previewRemovalState(m.ChannelID, m.TS, previews); pending {
 		return toastWithClear(a, previewRemovalToast(r), 3*time.Second)
 	}
-	a.startPreviewRemoval(m.ChannelID, m.TS, messages.RemovablePreview{AttachmentID: m.AttachmentID, URL: m.URL})
+	a.startPreviewRemoval(m.ChannelID, m.TS, messages.RemovablePreview{AttachmentID: m.AttachmentID, URL: m.URL}, previews)
 	svc := a.messageSvc
 	return func() tea.Msg {
 		return svc.RemoveAttachment(m.TeamID, ids.ChannelID(m.ChannelID), ids.MessageTS(m.TS), m.AttachmentID)

@@ -393,3 +393,20 @@ func TestRemovePreview_IDIsThePositionWhenSlackSentNone(t *testing.T) {
 		t.Errorf("calls = %+v, want attachment 2 (its position)", *calls)
 	}
 }
+
+// Two previews of the same URL: after the first is removed Slack renumbers
+// the twin into its id, so (id, URL) is still on the message. The echo
+// with one fewer copy of that URL still ends the wait.
+func TestRemovePreview_TwinURLEchoEndsPending(t *testing.T) {
+	a, calls := previewApp(t, nil, ownMessage("1.0", card(1, "Same", "https://a.example"), card(2, "Same", "https://a.example")))
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('1'))
+	if len(*calls) != 1 {
+		t.Fatalf("calls = %+v, want one removal", *calls)
+	}
+	a.Update(NewMessageMsg{ChannelID: "C1", Changed: true, Message: ownMessage("1.0", card(1, "Same", "https://a.example"))})
+	pressKeyAll(t, a, keyPress('x'))
+	if !dialogShows(a, "Remove preview?") {
+		t.Fatal("x after the echo should prompt again for the remaining twin")
+	}
+}
