@@ -4,8 +4,8 @@
 // (Slack's chat.deleteAttachment). The key opens a confirm prompt; the
 // confirmed press comes back as RemovePreviewMsg, which re-checks the
 // message and calls MessageService.RemoveAttachment. On success nothing
-// is done here: the message_changed echo updates the message (and
-// clears the pending state, see reduceNewMessage).
+// is done here: the message_changed echo updates the message (and ends
+// the pending state once the preview is gone, see reduceNewMessage).
 //
 // Slack renumbers the attachments after a removal, so an id is only
 // good against the list it was read from. Three guards follow from
@@ -17,7 +17,6 @@ package ui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -49,45 +48,67 @@ type RemovePreviewMsg struct {
 	URL          string
 }
 
-// previewRemoval is one removal in flight. sig names the message's
-// previews as they were, so a reload that changes them ends the wait.
+// previewRemoval is one removal in flight: the preview it targets, by
+// the id and URL the prompt named. The wait ends when the message no
+// longer shows that pair (the echo, or a reload), on a failure, or after
+// previewRemovalTimeout. confirmed is set once Slack answered ok: Slack
+// has acted and the echo is only late, so the timeout no longer applies.
 type previewRemoval struct {
-	started time.Time
-	sig     string
+	started   time.Time
+	id        int
+	url       string
+	confirmed bool
 }
 
 func previewRemovalKey(channelID, ts string) string { return channelID + "/" + ts }
 
-// previewSignature names a preview list: ids and URLs, in order.
-func previewSignature(ps []messages.RemovablePreview) string {
-	var b strings.Builder
+// hasPreview reports whether ps lists the preview with this id and URL.
+func hasPreview(ps []messages.RemovablePreview, id int, url string) bool {
 	for _, p := range ps {
-		fmt.Fprintf(&b, "%d=%s\n", p.AttachmentID, p.URL)
+		if p.AttachmentID == id && p.URL == url {
+			return true
+		}
 	}
-	return b.String()
+	return false
 }
 
-// previewRemovalPending reports whether a removal for the message is in
-// flight. One that outlived the timeout, or whose message no longer has
-// the previews it started with (it was reloaded), is forgotten.
-func (a *App) previewRemovalPending(channelID, ts string, previews []messages.RemovablePreview) bool {
+// previewRemovalState reports the removal in flight for the message, if
+// any, given its current previews. One whose targeted preview is gone is
+// over and forgotten, as is an unconfirmed one past the timeout.
+func (a *App) previewRemovalState(channelID, ts string, previews []messages.RemovablePreview) (r previewRemoval, ok bool) {
 	k := previewRemovalKey(channelID, ts)
-	r, ok := a.previewRemovals[k]
+	r, ok = a.previewRemovals[k]
 	if !ok {
-		return false
+		return previewRemoval{}, false
 	}
-	if a.now().Sub(r.started) >= previewRemovalTimeout || r.sig != previewSignature(previews) {
+	if !hasPreview(previews, r.id, r.url) || (!r.confirmed && a.now().Sub(r.started) >= previewRemovalTimeout) {
 		delete(a.previewRemovals, k)
-		return false
+		return previewRemoval{}, false
 	}
-	return true
+	return r, true
 }
 
-func (a *App) startPreviewRemoval(channelID, ts string, previews []messages.RemovablePreview) {
+// previewRemovalToast is the toast for x on a message with a removal in
+// flight.
+func previewRemovalToast(r previewRemoval) string {
+	if r.confirmed {
+		return "Preview removed, reload the channel to see it"
+	}
+	return "Removing preview…"
+}
+
+func (a *App) startPreviewRemoval(channelID, ts string, p messages.RemovablePreview) {
 	if a.previewRemovals == nil {
 		a.previewRemovals = map[string]previewRemoval{}
 	}
-	a.previewRemovals[previewRemovalKey(channelID, ts)] = previewRemoval{started: a.now(), sig: previewSignature(previews)}
+	a.previewRemovals[previewRemovalKey(channelID, ts)] = previewRemoval{started: a.now(), id: p.AttachmentID, url: p.URL}
+}
+
+// previewRemovalEchoed ends the wait for a message whose change echo no
+// longer shows the targeted preview. An echo that still shows it (a text
+// edit from another client, a second unfurl landing) leaves it pending.
+func (a *App) previewRemovalEchoed(channelID string, echo messages.MessageItem) {
+	a.previewRemovalState(channelID, echo.TS, messages.RemovablePreviews(echo))
 }
 
 // clearPreviewRemoval ends the wait for a message.
@@ -115,8 +136,8 @@ func (a *App) removePreviewOfSelected() tea.Cmd {
 	if len(previews) == 0 {
 		return toastWithClear(a, "No link preview on this message", 3*time.Second)
 	}
-	if a.previewRemovalPending(ref.channelID, ref.ts, previews) {
-		return toastWithClear(a, "Removing preview…", 3*time.Second)
+	if r, pending := a.previewRemovalState(ref.channelID, ref.ts, previews); pending {
+		return toastWithClear(a, previewRemovalToast(r), 3*time.Second)
 	}
 	remove := func(p messages.RemovablePreview) func() tea.Msg {
 		req := RemovePreviewMsg{
@@ -150,17 +171,13 @@ func (a *App) removePreview(m RemovePreviewMsg) tea.Cmd {
 		return toastWithClear(a, "That preview changed, try again", 3*time.Second)
 	}
 	previews := messages.RemovablePreviews(cur)
-	found := false
-	for _, p := range previews {
-		found = found || (p.AttachmentID == m.AttachmentID && p.URL == m.URL)
-	}
-	if !found {
+	if !hasPreview(previews, m.AttachmentID, m.URL) {
 		return toastWithClear(a, "That preview changed, try again", 3*time.Second)
 	}
-	if a.previewRemovalPending(m.ChannelID, m.TS, previews) {
-		return toastWithClear(a, "Removing preview…", 3*time.Second)
+	if r, pending := a.previewRemovalState(m.ChannelID, m.TS, previews); pending {
+		return toastWithClear(a, previewRemovalToast(r), 3*time.Second)
 	}
-	a.startPreviewRemoval(m.ChannelID, m.TS, previews)
+	a.startPreviewRemoval(m.ChannelID, m.TS, messages.RemovablePreview{AttachmentID: m.AttachmentID, URL: m.URL})
 	svc := a.messageSvc
 	return func() tea.Msg {
 		return svc.RemoveAttachment(m.TeamID, ids.ChannelID(m.ChannelID), ids.MessageTS(m.TS), m.AttachmentID)
@@ -174,7 +191,14 @@ var reduceRemovePreview reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) 
 
 	case AttachmentRemovedMsg:
 		if m.Err == nil {
-			// The message_changed echo shows the result.
+			// Slack did it. The message_changed echo shows the result; if
+			// it never comes the removal stays confirmed, not expired, so a
+			// second x cannot name a renumbered id.
+			k := previewRemovalKey(m.ChannelID, m.TS)
+			if r, ok := a.previewRemovals[k]; ok {
+				r.confirmed = true
+				a.previewRemovals[k] = r
+			}
 			return nil, true
 		}
 		if errors.Is(m.Err, context.DeadlineExceeded) {

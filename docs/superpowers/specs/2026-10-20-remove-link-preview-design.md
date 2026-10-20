@@ -189,10 +189,16 @@ Where the code differs from, or fills in, the design above:
 - The removable-preview selection is `messages.RemovablePreviews`
   (`internal/ui/messages/previews.go`); its `Label()` is the title, else the
   URL.
-- "A reload of the message" ends a pending removal by comparing the message's
-  current previews (ids and URLs) with the ones the removal started from, at
-  the next `x`; there is no hook on the load path. A reload that returns the
-  same previews leaves the removal pending until the echo or the 30 seconds.
+- The pending state names the targeted preview (its id and URL), not the
+  whole attachment list. It ends when the message no longer shows that pair:
+  the `message_changed` echo (an echo that still shows it, such as a text edit
+  from another client or a second unfurl landing, leaves it pending), or a
+  reload (checked at the next `x`, there is no hook on the load path). It also
+  ends on a failure, and, for a call that timed out, after 30 seconds.
+- A removal Slack answered ok for is marked confirmed and does not expire: if
+  the echo never arrives, `x` toasts "Preview removed, reload the channel to
+  see it" and sends nothing. The pane is not changed optimistically, since
+  Slack's renumbering is not verified.
 - The prompt's confirm answers with `RemovePreviewMsg`; the re-check, the
   pending state and the call live in `internal/ui/remove_preview.go`.
   A call that hits the 10s timeout toasts "Removing the preview timed out,

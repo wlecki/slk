@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,12 @@ type removeCall struct {
 	id                int
 }
 
+// timeoutErr is a removal that hit its deadline, wrapped as production
+// does: postForm wraps the transport's *url.Error.
+func timeoutErr() error {
+	return fmt.Errorf("calling chat.deleteAttachment: %w", &url.Error{Op: "Post", URL: "x", Err: context.DeadlineExceeded})
+}
+
 func card(id int, title, url string) blocks.LegacyAttachment {
 	return blocks.LegacyAttachment{ID: id, Title: title, FromURL: url}
 }
@@ -30,6 +38,7 @@ func ownMessage(ts string, atts ...blocks.LegacyAttachment) messages.MessageItem
 
 // previewApp is an App in T1 on C1 whose first message is selected and
 // focused, with the user U1. Removals are recorded and answered with err.
+// Toast clear ticks are stopped, so a toast stays on the status bar.
 func previewApp(t *testing.T, err error, msgs ...messages.MessageItem) (*App, *[]removeCall) {
 	t.Helper()
 	a := newTestApp(t, withSize(120, 40), withActiveChannel("C1"), withMessages(msgs...))
@@ -37,6 +46,9 @@ func previewApp(t *testing.T, err error, msgs ...messages.MessageItem) (*App, *[
 	a.activeTeamID = "T1"
 	a.focusedPanel = PanelMessages
 	a.messagepane.SelectByIndex(0)
+	oldTick := toastTick
+	toastTick = func(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
+	t.Cleanup(func() { toastTick = oldTick })
 	calls := &[]removeCall{}
 	a.setAttachmentRemoverForTest(func(team string, ch ids.ChannelID, ts ids.MessageTS, id int) core.Msg {
 		*calls = append(*calls, removeCall{team, string(ch), string(ts), id})
@@ -45,36 +57,14 @@ func previewApp(t *testing.T, err error, msgs ...messages.MessageItem) (*App, *[
 	return a, calls
 }
 
-// pressKeyFast is pressKey, but it feeds every answer back through Update
-// and does not wait for toast clear ticks: a
-// command that has not answered within 100ms is a timer and is dropped,
-// which leaves the toast on the status bar to be read.
-func pressKeyFast(t *testing.T, a *App, k tea.KeyMsg) []tea.Msg {
+// pressKeyAll is pressKey, but it feeds every answer back through Update,
+// however deep the chain. Toast clear ticks never fire (previewApp stops
+// them), so the toast a key leaves can be read.
+func pressKeyAll(t *testing.T, a *App, k tea.KeyMsg) []tea.Msg {
 	t.Helper()
-	var run func(cmd tea.Cmd) []tea.Msg
-	run = func(cmd tea.Cmd) []tea.Msg {
-		if cmd == nil {
-			return nil
-		}
-		done := make(chan tea.Msg, 1)
-		go func() { done <- cmd() }()
-		select {
-		case m := <-done:
-			if cmds, ok := cmdListOf(m); ok {
-				var out []tea.Msg
-				for _, c := range cmds {
-					out = append(out, run(c)...)
-				}
-				return out
-			}
-			return []tea.Msg{m}
-		case <-time.After(100 * time.Millisecond):
-			return nil
-		}
-	}
 	_, cmd := a.Update(k)
 	var out []tea.Msg
-	queue := run(cmd)
+	queue := drainBatch(cmd)
 	for len(queue) > 0 {
 		m := queue[0]
 		queue = queue[1:]
@@ -83,7 +73,7 @@ func pressKeyFast(t *testing.T, a *App, k tea.KeyMsg) []tea.Msg {
 		}
 		out = append(out, m)
 		_, next := a.Update(m)
-		queue = append(queue, run(next)...)
+		queue = append(queue, drainBatch(next)...)
 	}
 	return out
 }
@@ -95,14 +85,14 @@ func toastShows(a *App, text string) bool {
 
 func TestRemovePreview_OnePreviewConfirmSends(t *testing.T) {
 	a, calls := previewApp(t, nil, ownMessage("1.0", card(1, "Example", "https://example.com")))
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	if a.mode != ModeConfirm || !dialogShows(a, "Remove preview?") || !dialogShows(a, "Example") {
 		t.Fatalf("mode = %v; want the prompt naming the preview", a.mode)
 	}
 	if len(*calls) != 0 {
 		t.Fatal("the prompt sent before it was confirmed")
 	}
-	if toast := toastText(pressKeyFast(t, a, keyPress('y'))); toast != "" {
+	if toast := toastText(pressKeyAll(t, a, keyPress('y'))); toast != "" {
 		t.Errorf("a successful removal toasted %q", toast)
 	}
 	want := []removeCall{{"T1", "C1", "1.0", 1}}
@@ -116,8 +106,8 @@ func TestRemovePreview_OnePreviewConfirmSends(t *testing.T) {
 
 func TestRemovePreview_CancelSendsNothing(t *testing.T) {
 	a, calls := previewApp(t, nil, ownMessage("1.0", card(1, "Example", "https://example.com")))
-	pressKeyFast(t, a, keyPress('x'))
-	pressKeyFast(t, a, keyPress('n'))
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('n'))
 	if len(*calls) != 0 || a.mode != ModeNormal {
 		t.Errorf("calls = %+v, mode = %v; cancel must send nothing", *calls, a.mode)
 	}
@@ -125,7 +115,7 @@ func TestRemovePreview_CancelSendsNothing(t *testing.T) {
 
 func TestRemovePreview_UsesURLWhenThereIsNoTitle(t *testing.T) {
 	a, _ := previewApp(t, nil, ownMessage("1.0", card(1, "", "https://example.com/a")))
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	if !dialogShows(a, "https://example.com/a") {
 		t.Errorf("prompt does not name the URL:\n%s", a.confirmPrompt.View())
 	}
@@ -138,7 +128,7 @@ func TestRemovePreview_SeveralPreviewsOffersEach(t *testing.T) {
 		card(3, "Third", "https://c.example"),
 	)
 	a, calls := previewApp(t, nil, msg)
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	for _, want := range []string{"[1] First", "[2] Third", "[Cancel]"} {
 		if !dialogShows(a, want) {
 			t.Errorf("prompt missing %q:\n%s", want, a.confirmPrompt.View())
@@ -147,7 +137,7 @@ func TestRemovePreview_SeveralPreviewsOffersEach(t *testing.T) {
 	if dialogShows(a, "A bot card") {
 		t.Error("a card without a URL was offered")
 	}
-	pressKeyFast(t, a, keyPress('2'))
+	pressKeyAll(t, a, keyPress('2'))
 	if len(*calls) != 1 || (*calls)[0].id != 3 {
 		t.Errorf("calls = %+v, want one for attachment 3", *calls)
 	}
@@ -155,7 +145,7 @@ func TestRemovePreview_SeveralPreviewsOffersEach(t *testing.T) {
 
 func TestRemovePreview_SeveralPreviewsCancelButton(t *testing.T) {
 	a, calls := previewApp(t, nil, ownMessage("1.0", card(1, "First", "https://a.example"), card(2, "Second", "https://b.example")))
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	clickConfirmText(t, a, "Cancel")
 	if len(*calls) != 0 || a.confirmPrompt.IsVisible() {
 		t.Errorf("calls = %+v, visible = %v; Cancel must close without sending", *calls, a.confirmPrompt.IsVisible())
@@ -169,7 +159,7 @@ func TestRemovePreview_NoPreviewToasts(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			a, calls := previewApp(t, nil, msg)
-			if got := toastText(pressKeyFast(t, a, keyPress('x'))); got != "" {
+			if got := toastText(pressKeyAll(t, a, keyPress('x'))); got != "" {
 				// toastWithClear sets the status bar directly.
 				t.Errorf("unexpected ToastMsg %q", got)
 			}
@@ -187,7 +177,7 @@ func TestRemovePreview_NotOwnMessage(t *testing.T) {
 	msg := ownMessage("1.0", card(1, "Example", "https://example.com"))
 	msg.UserID = "U2"
 	a, calls := previewApp(t, nil, msg)
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	if a.confirmPrompt.IsVisible() || len(*calls) != 0 {
 		t.Error("prompted for someone else's message")
 	}
@@ -200,7 +190,7 @@ func TestRemovePreview_RefusedOnEphemeral(t *testing.T) {
 	msg := ownMessage("1.0", card(1, "Example", "https://example.com"))
 	msg.Ephemeral = true
 	a, calls := previewApp(t, nil, msg)
-	toast := toastText(pressKeyFast(t, a, keyPress('x')))
+	toast := toastText(pressKeyAll(t, a, keyPress('x')))
 	if toast != "Only visible to you" || a.confirmPrompt.IsVisible() || len(*calls) != 0 {
 		t.Errorf("toast = %q, prompt = %v, calls = %+v; want the ephemeral refusal", toast, a.confirmPrompt.IsVisible(), *calls)
 	}
@@ -208,31 +198,83 @@ func TestRemovePreview_RefusedOnEphemeral(t *testing.T) {
 
 // While a removal is in flight, a second x on that message does nothing:
 // Slack renumbers the attachments, so a second id could name another one.
+// A timed-out call is still in flight as far as slk can tell.
 func TestRemovePreview_SecondPressWhilePendingIsRefused(t *testing.T) {
-	a, calls := previewApp(t, nil, ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")))
-	pressKeyFast(t, a, keyPress('x'))
-	pressKeyFast(t, a, keyPress('1'))
-	pressKeyFast(t, a, keyPress('x'))
+	a, calls := previewApp(t, timeoutErr(), ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")))
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('1'))
+	pressKeyAll(t, a, keyPress('x'))
 	if a.confirmPrompt.IsVisible() || len(*calls) != 1 {
 		t.Errorf("prompt = %v, calls = %d; the second x must do nothing", a.confirmPrompt.IsVisible(), len(*calls))
 	}
 	if !toastShows(a, "Removing preview…") {
-		t.Errorf("toast does not show %q", "Removing preview…")
+		t.Error("toast does not show \"Removing preview…\"")
+	}
+}
+
+// Slack answered ok: the removal is done and only its echo is late, so it
+// must not expire. x says so and sends nothing, however long it takes, and
+// the pane is not touched (Slack's renumbering is not verified).
+func TestRemovePreview_ConfirmedStaysUntilThePreviewIsGone(t *testing.T) {
+	a, calls := previewApp(t, nil, ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")))
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	a.now = func() time.Time { return now }
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('1'))
+
+	now = now.Add(5 * time.Minute)
+	pressKeyAll(t, a, keyPress('x'))
+	if a.confirmPrompt.IsVisible() || len(*calls) != 1 {
+		t.Fatalf("prompt = %v, calls = %d; a confirmed removal must not expire", a.confirmPrompt.IsVisible(), len(*calls))
+	}
+	if !toastShows(a, "Preview removed, reload the channel to see it") {
+		t.Error("toast does not say the preview was removed")
+	}
+	if got := a.messagepane.Messages()[0].LegacyAttachments; len(got) != 2 {
+		t.Errorf("pane attachments = %+v; the pane must not be changed before the echo", got)
+	}
+
+	// A reload that no longer has the preview ends it.
+	a.messagepane.SetMessages([]messages.MessageItem{ownMessage("1.0", card(1, "Two", "https://b.example"))})
+	a.messagepane.SelectByIndex(0)
+	pressKeyAll(t, a, keyPress('x'))
+	if !dialogShows(a, "Remove preview?") {
+		t.Error("x after the reload should prompt again")
+	}
+}
+
+// An echo that still shows the targeted preview is not the answer: a
+// text edit from another client, or a second unfurl landing.
+func TestRemovePreview_EchoThatKeepsThePreviewLeavesItPending(t *testing.T) {
+	for name, echo := range map[string]messages.MessageItem{
+		"same previews": ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")),
+		"second unfurl": ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example"), card(3, "Three", "https://c.example")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, calls := previewApp(t, timeoutErr(), ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")))
+			pressKeyAll(t, a, keyPress('x'))
+			pressKeyAll(t, a, keyPress('1'))
+			a.Update(NewMessageMsg{ChannelID: "C1", Changed: true, Message: echo})
+			pressKeyAll(t, a, keyPress('x'))
+			if a.confirmPrompt.IsVisible() || len(*calls) != 1 {
+				t.Errorf("prompt = %v, calls = %d; the removal must still be pending", a.confirmPrompt.IsVisible(), len(*calls))
+			}
+		})
 	}
 }
 
 // The echo that carries the new attachment list ends the wait.
 func TestRemovePreview_EchoEndsPending(t *testing.T) {
 	a, calls := previewApp(t, nil, ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")))
-	pressKeyFast(t, a, keyPress('x'))
-	pressKeyFast(t, a, keyPress('1'))
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('1'))
 
 	a.Update(NewMessageMsg{ChannelID: "C1", Changed: true, Message: ownMessage("1.0", card(1, "Two", "https://b.example"))})
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	if !dialogShows(a, "Remove preview?") {
 		t.Fatal("x after the echo should prompt again")
 	}
-	pressKeyFast(t, a, keyPress('y'))
+	pressKeyAll(t, a, keyPress('y'))
 	// Ids were renumbered by Slack: the remaining card is now 1.
 	if len(*calls) != 2 || (*calls)[1].id != 1 {
 		t.Errorf("calls = %+v, want a second call for the renumbered id 1", *calls)
@@ -241,12 +283,12 @@ func TestRemovePreview_EchoEndsPending(t *testing.T) {
 
 func TestRemovePreview_FailureToastsAndClearsPending(t *testing.T) {
 	a, calls := previewApp(t, errors.New("cant_delete_message"), ownMessage("1.0", card(1, "One", "https://a.example")))
-	pressKeyFast(t, a, keyPress('x'))
-	pressKeyFast(t, a, keyPress('y'))
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('y'))
 	if !toastShows(a, "Could not remove the preview: cant_delete_message") {
 		t.Errorf("toast does not show %q", "Could not remove the preview: cant_delete_message")
 	}
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	if !dialogShows(a, "Remove preview?") {
 		t.Error("a failed removal must not stay pending")
 	}
@@ -258,22 +300,22 @@ func TestRemovePreview_FailureToastsAndClearsPending(t *testing.T) {
 // A call that timed out may still have happened: it stays pending until
 // the echo or the timeout, and the toast says to check the message.
 func TestRemovePreview_TimeoutStaysPendingUntilThirtySeconds(t *testing.T) {
-	a, _ := previewApp(t, context.DeadlineExceeded, ownMessage("1.0", card(1, "One", "https://a.example")))
+	a, _ := previewApp(t, timeoutErr(), ownMessage("1.0", card(1, "One", "https://a.example")))
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	a.now = func() time.Time { return now }
-	pressKeyFast(t, a, keyPress('x'))
-	pressKeyFast(t, a, keyPress('y'))
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('y'))
 	if !toastShows(a, "Removing the preview timed out, check the message") {
 		t.Errorf("toast does not show %q", "Removing the preview timed out, check the message")
 	}
 
 	now = now.Add(29 * time.Second)
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	if a.confirmPrompt.IsVisible() || !toastShows(a, "Removing preview…") {
 		t.Error("still pending at 29s")
 	}
 	now = now.Add(2 * time.Second)
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	if !dialogShows(a, "Remove preview?") {
 		t.Error("pending must end after 30s")
 	}
@@ -281,13 +323,13 @@ func TestRemovePreview_TimeoutStaysPendingUntilThirtySeconds(t *testing.T) {
 
 // A reload that replaces the message's attachments ends the wait too.
 func TestRemovePreview_ReloadEndsPending(t *testing.T) {
-	a, _ := previewApp(t, context.DeadlineExceeded, ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")))
-	pressKeyFast(t, a, keyPress('x'))
-	pressKeyFast(t, a, keyPress('1'))
+	a, _ := previewApp(t, timeoutErr(), ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")))
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('1'))
 
 	a.messagepane.SetMessages([]messages.MessageItem{ownMessage("1.0", card(1, "Two", "https://b.example"))})
 	a.messagepane.SelectByIndex(0)
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	if !dialogShows(a, "Remove preview?") {
 		t.Error("a reload that changed the previews must end the wait")
 	}
@@ -303,9 +345,9 @@ func TestRemovePreview_ConfirmAfterTheMessageChangedIsRefused(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			a, calls := previewApp(t, nil, ownMessage("1.0", card(1, "First", "https://a.example"), card(2, "Second", "https://b.example")))
-			pressKeyFast(t, a, keyPress('x'))
+			pressKeyAll(t, a, keyPress('x'))
 			a.Update(NewMessageMsg{ChannelID: "C1", Changed: true, Message: changed})
-			pressKeyFast(t, a, keyPress('1')) // "First": id 1, https://a.example
+			pressKeyAll(t, a, keyPress('1')) // "First": id 1, https://a.example
 			if len(*calls) != 0 {
 				t.Errorf("calls = %+v; a stale confirm must not send", *calls)
 			}
@@ -320,9 +362,9 @@ func TestRemovePreview_ConfirmAfterTheMessageChangedIsRefused(t *testing.T) {
 // that is active when the prompt is confirmed.
 func TestRemovePreview_RequestCarriesTheTeamOfThePress(t *testing.T) {
 	a, calls := previewApp(t, nil, ownMessage("1.0", card(1, "One", "https://a.example")))
-	pressKeyFast(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('x'))
 	a.activeTeamID = "T2"
-	pressKeyFast(t, a, keyPress('y'))
+	pressKeyAll(t, a, keyPress('y'))
 	if len(*calls) != 1 || (*calls)[0].team != "T1" {
 		t.Errorf("calls = %+v, want team T1", *calls)
 	}
@@ -333,8 +375,8 @@ func TestRemovePreview_ThreadReply(t *testing.T) {
 	a.threadPanel.SetThread(ownMessage("P1"), []messages.MessageItem{ownMessage("R1", card(1, "One", "https://a.example"))}, "C1", "P1")
 	a.threadVisible = true
 	a.focusedPanel = PanelThread
-	pressKeyFast(t, a, keyPress('x'))
-	pressKeyFast(t, a, keyPress('y'))
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('y'))
 	if len(*calls) != 1 || (*calls)[0] != (removeCall{"T1", "C1", "R1", 1}) {
 		t.Errorf("calls = %+v, want one for reply R1", *calls)
 	}
@@ -345,8 +387,8 @@ func TestRemovePreview_IDIsThePositionWhenSlackSentNone(t *testing.T) {
 		blocks.LegacyAttachment{Title: "bot"},
 		blocks.LegacyAttachment{Title: "Second", FromURL: "https://b.example"},
 	))
-	pressKeyFast(t, a, keyPress('x'))
-	pressKeyFast(t, a, keyPress('y'))
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('y'))
 	if len(*calls) != 1 || (*calls)[0].id != 2 {
 		t.Errorf("calls = %+v, want attachment 2 (its position)", *calls)
 	}

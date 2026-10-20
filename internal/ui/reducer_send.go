@@ -245,8 +245,9 @@ func reduceNewMessage(a *App, m NewMessageMsg) tea.Cmd {
 		// This branch must run BEFORE the isSelfSent dedup below,
 		// since changes to messages we recently sent would otherwise
 		// be silently dropped (the TS is still in selfSentTSes).
-		// A removal of this message's preview is answered by this echo.
-		a.clearPreviewRemoval(m.ChannelID, m.Message.TS)
+		// An echo that no longer shows the preview being removed ends
+		// that removal.
+		a.previewRemovalEchoed(m.ChannelID, m.Message)
 		for _, mm := range a.modelsForChannel(m.ChannelID) {
 			mm.UpdateMessageInPlace(m.Message)
 		}
