@@ -365,6 +365,10 @@ type Model struct {
 	// buildCache need; View fires them right after that build.
 	emojiCtx       messages.EmojiContext
 	pendingFlushes []func(io.Writer) error
+	// emojiPlaced reports that the last buildCache placed at least one
+	// emoji image (warm or cold), so an emoji fetch landing may change
+	// what the sidebar draws.
+	emojiPlaced bool
 }
 
 // SetEmojiContext configures emoji-image rendering for section headers
@@ -389,8 +393,13 @@ func (m *Model) SetEmojiCustoms(customs map[string]string) {
 
 // HandleEmojiImageReady rebuilds the cached rows after an emoji image
 // fetch finished (or failed), so a cold reservation becomes the image,
-// or the glyph fallback. The URL is unused: every row is rebuilt.
+// or the glyph fallback. The URL is unused: every row is rebuilt, but
+// only when the rows hold a placement. Any surface's fetch lands here,
+// and a sidebar that placed nothing has nothing to swap.
 func (m *Model) HandleEmojiImageReady(string) {
+	if !m.emojiPlaced {
+		return
+	}
 	m.cacheValid = false
 	m.dirty()
 }
@@ -404,6 +413,7 @@ func (m *Model) placeEmoji(name string) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	m.emojiPlaced = true
 	if flush != nil {
 		m.pendingFlushes = append(m.pendingFlushes, flush)
 	}
@@ -1658,6 +1668,7 @@ func (m *Model) buildCache(width int) {
 	m.cacheWidth = width
 	m.cacheRows = m.cacheRows[:0]
 	m.pendingFlushes = nil
+	m.emojiPlaced = false
 	m.cacheFiller = lipgloss.NewStyle().Width(width).Background(styles.SidebarBackground).Render("")
 
 	// Per-channel read state for the active workspace. The DB is the
@@ -2121,12 +2132,16 @@ func (m *Model) sectionDisplayMeta(sectionKey string) (name, emoji string) {
 func (m *Model) renderSectionHeaderLabel(name, cursor string, dotStyle lipgloss.Style, bgAnsi string) (string, string) {
 	displayName, emojiCode := m.sectionDisplayMeta(name)
 	emojiPrefix := ""
+	emojiPrefixSelected := ""
 	if placed, ok := m.placeEmoji(emojiCode); ok {
 		// A placement ends by resetting the foreground ("\x1b[39m"),
 		// which ReapplyBgAfterResets does not catch, so re-assert the
-		// header's own before the name (as messages.ReactionPillText
-		// does for a pill's count).
+		// foreground each variant had before the image (as
+		// messages.ReactionPillText does for a pill's count): the
+		// header's own on the normal label; on the selected one, what
+		// ReapplyBgAfterResets put back after the cursor glyph's reset.
 		emojiPrefix = placed + ansi.Style{}.ForegroundColor(styles.SectionHeader.GetForeground()).String() + " "
+		emojiPrefixSelected = placed + bgAnsi + " "
 	} else if emojiCode != "" {
 		// emojiutil.Sprint resolves :shortcode: to the glyph and
 		// appends a space; on unknown shortcodes it returns the input
@@ -2139,6 +2154,7 @@ func (m *Model) renderSectionHeaderLabel(name, cursor string, dotStyle lipgloss.
 		} else {
 			emojiPrefix = token + " "
 		}
+		emojiPrefixSelected = emojiPrefix
 	}
 
 	glyph := "▾" // expanded
@@ -2173,7 +2189,7 @@ func (m *Model) renderSectionHeaderLabel(name, cursor string, dotStyle lipgloss.
 	}
 
 	label := " " + glyph + " " + emojiPrefix + displayName + aggregates
-	selected := cursor + glyph + " " + emojiPrefix + displayName + aggregates
+	selected := cursor + glyph + " " + emojiPrefixSelected + displayName + aggregates
 	return messages.ReapplyBgAfterResets(label, bgAnsi),
 		messages.ReapplyBgAfterResets(selected, bgAnsi)
 }

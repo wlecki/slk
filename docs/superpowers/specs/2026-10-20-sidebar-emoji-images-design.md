@@ -52,9 +52,12 @@ returns not-placed and the header falls back to the glyph, then to
 
 The placeholder ends with `\x1b[39m` (default foreground), which
 `ReapplyBgAfterResets` does not catch, so the header name after the image
-would be drawn in the terminal's default colour. After a placement the
-header re-asserts `styles.SectionHeader`'s foreground, as
-`messages.ReactionPillText` does for reaction pills. Nothing is inserted
+would be drawn in the terminal's default colour. After a placement each
+label variant re-asserts the colours it had before the image, as
+`messages.ReactionPillText` does for reaction pills: the normal label
+`styles.SectionHeader`'s foreground; the selected label the sidebar
+background and foreground that `ReapplyBgAfterResets` put back after
+the cursor glyph's reset, so its name looks as it does in glyph mode. Nothing is inserted
 between the placeholder's own `38;2;R;G;B` SGR and its runes: that
 colour is the image ID.
 
@@ -97,7 +100,9 @@ a row scrolled out of view is harmless. Closures are not stored in
 
 - `EmojiImageReadyMsg`: the App's debounced `emojiInvalidateMsg` arm
   calls `sidebar.HandleEmojiImageReady("")`, which drops the row cache
-  and bumps `Version()`. The App's wrapped sidebar panel cache
+  and bumps `Version()` when the last build placed an image (warm or
+  cold). Any surface's fetch ends there, and a sidebar that placed
+  nothing keeps its rows. The App's wrapped sidebar panel cache
   (`renderCache.sidebar`) keys on `Version()`, so that is enough.
 - Custom emoji arriving (`CustomEmojisLoadedMsg` via `App.SetCustomEmoji`):
   `SetEmojiCustoms`, same invalidation.

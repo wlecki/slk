@@ -65,7 +65,16 @@ func TestSidebarEmoji_CustomSectionEmojiReachesTheFrame(t *testing.T) {
 // The debounced emoji invalidation reaches the sidebar: a fetch that
 // lands turns a cold reservation into the image on the next frame.
 func TestSidebarEmoji_InvalidationTickRebuildsTheSidebar(t *testing.T) {
-	a := newTestApp(t)
+	emoji.SetImageMode(true, 2)
+	t.Cleanup(func() { emoji.SetImageMode(false, 2) })
+	url, _ := emoji.URLForShortcode("orange_book", nil)
+	ff := sidebarEmojiFetcher{emoji.EmojiCacheKey(url): {Cells: goimage.Pt(2, 1), Lines: []string{"\U0010EEEE\U0010EEEE"}}}
+
+	a := newTestApp(t, withChannels(sidebar.ChannelItem{ID: "C1", Name: "handbook", Type: "channel", Section: "S1"}))
+	a.sidebar.SetSectionsProvider(sidebarSections{{ID: "S1", Name: "Docs", Emoji: "orange_book", Type: "standard"}})
+	a.SetEmojiContext(messages.EmojiContext{PlaceCtx: emoji.PlaceContext{Fetcher: ff}, Cells: 2})
+	_ = a.View()
+
 	v := a.sidebar.Version()
 	_, _ = a.Update(emojiInvalidateMsg{})
 	if a.sidebar.Version() == v {

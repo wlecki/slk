@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/gammons/slk/internal/emoji"
@@ -146,6 +147,53 @@ func TestEmojiImages_SectionHeaderPlacesStandardEmoji(t *testing.T) {
 	}
 	if glyph := emoji.CodeMap()[":orange_book:"]; strings.Contains(header, glyph) {
 		t.Errorf("header still draws the glyph %q next to the image:\n%q", glyph, header)
+	}
+}
+
+// With the cursor on the header, the label after the cursor glyph is in
+// the selected colours (ReapplyBgAfterResets re-applies them after the
+// glyph's reset). The image must hand the name back those colours, not
+// the unselected header's, so the name looks as it does in glyph mode.
+func TestEmojiImages_SelectedHeaderKeepsSelectedColours(t *testing.T) {
+	selectedHeader := func(m *Model) string {
+		t.Helper()
+		m.SetFocused(true)
+		for {
+			if _, ok := m.IsSectionHeaderSelected(); ok {
+				break
+			}
+			m.MoveDown()
+		}
+		return rowFor(t, m.View(10, 30), "Docs")
+	}
+	selectedAttrs := messages.SidebarBgANSI() + messages.SidebarFgANSI()
+
+	glyph := sectionModel("orange_book")
+	if row := selectedHeader(&glyph); !strings.Contains(row, selectedAttrs+"▾ "+emoji.CodeMap()[":orange_book:"]) {
+		t.Fatalf("precondition: in glyph mode the selected header is drawn in %q:\n%q", selectedAttrs, row)
+	}
+
+	withEmojiImages(t)
+	ff := newFakeEmojiFetcher()
+	placement := ff.serve(mustEmojiURL(t, "orange_book", nil), 42, nil)
+	m := sectionModel("orange_book")
+	m.SetEmojiContext(emojiCtx(ff))
+	if row := selectedHeader(&m); !strings.Contains(row, placement+selectedAttrs+" Docs") {
+		t.Errorf("selected header does not restore the selected colours after the image:\n%q", row)
+	}
+}
+
+// Every surface's emoji fetch ends in HandleEmojiImageReady. A sidebar
+// with no image placed has nothing to swap and keeps its cached rows.
+func TestEmojiImages_ImageReadyIgnoredWithoutPlacements(t *testing.T) {
+	withEmojiImages(t)
+	m := sectionModel("")
+	m.SetEmojiContext(emojiCtx(newFakeEmojiFetcher()))
+	m.View(10, 30)
+	v := m.Version()
+	m.HandleEmojiImageReady("https://example.com/x.png")
+	if m.Version() != v {
+		t.Error("HandleEmojiImageReady rebuilt a sidebar that holds no emoji image")
 	}
 }
 
@@ -322,5 +370,8 @@ func TestEmojiImages_DMStatusImageNeverCutByTruncation(t *testing.T) {
 	}
 	if got := truncatedName(row); got != wantName {
 		t.Errorf("name truncated to %q next to the image, want %q as in glyph mode", got, wantName)
+	}
+	if got, want := lipgloss.Width(row), lipgloss.Width(rowFor(t, glyphMode.View(10, 24), long[:5])); got != want {
+		t.Errorf("row is %d cells wide with the image, %d with the glyph", got, want)
 	}
 }
