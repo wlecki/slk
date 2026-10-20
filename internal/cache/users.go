@@ -47,6 +47,9 @@ type User struct {
 // through UpdateUserStatus and the edge revalidation writes instead.
 // The original workspace association is retained on conflict; another
 // workspace may refresh the profile/home team but not its legacy external flag.
+// deleted, unlike status, IS written on conflict: every caller passes a full
+// profile's Deleted. A future caller that upserts a placeholder must read the
+// row's flag first, or it will un-delete a deactivated user.
 func (db *DB) UpsertUser(u User) error {
 	_, err := db.conn.Exec(`
 		INSERT INTO users (id, workspace_id, home_team_id, name, display_name, avatar_url, presence, is_bot, deleted, is_external, status_emoji, status_text, status_expiration, huddle_state, huddle_expiration, updated_at)
