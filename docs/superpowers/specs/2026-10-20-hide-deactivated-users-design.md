@@ -1,6 +1,6 @@
 # Hide deactivated users
 
-Status: design, not implemented.
+Status: implemented.
 
 ## Problem
 
@@ -173,3 +173,39 @@ global set also means one live update reaches every workspace's view.
 `[sidebar]` block it never had (`hide_inactive_after_days`, `width`).
 `wiki/Features.md` gets a bullet. AGENTS.md lists
 `cache.DB.DeactivatedUsers` and `MarkUserDeleted`.
+
+## Implementation notes
+
+Where the code differs from the design above:
+
+- `cache.DB.ClearUserDeleted(id)` exists next to `MarkUserDeleted`. A profile
+  observation that bypasses the full-profile writers can show a user active
+  again, and `recordUserDeleted` has to clear the flag then.
+- `recordUserDeleted(db, send, userID, deleted)` takes no team ID: the message
+  names no workspace. Writers that persist the flag themselves do not call it.
+  They read `cachedUserDeleted(db, id)` before the write and call
+  `announceUserDeleted(send, id, was, now)` after it, so a reactivation is
+  reported only for a user the cache had as deleted. `recordUserDeleted` is
+  the same two steps around `MarkUserDeleted` / `ClearUserDeleted`.
+- A peer Slack flagged on a conversation but with no cache row is remembered
+  in `WorkspaceContext.deletedPeers`. `WorkspaceContext.DeactivatedUsers(db)`
+  is the cache set plus those peers, and counts a remembered peer only while
+  the cache has no row for it. Once a row exists the cache decides, so a
+  profile that shows the user active again is not undone by the remembered
+  conversation flag when the workspace is switched back to.
+- `App.SetDeactivatedUsers` only adds. A reactivation arrives as
+  `UserDeactivatedMsg{Deactivated: false}`. The App replaces its set whole on
+  every change and never writes a published map, because the sidebar and
+  finder keep the map they are given. `App.hiddenUsers()` returns nil when the
+  option is off, so the surfaces know nothing about the option.
+- `App.channelPickItems` keeps the last `SetChannels` list so the `#`
+  autocomplete can be rebuilt when the set changes. `compose.Model.ChannelPicks`
+  is a test accessor, like `MentionUsers`.
+- `NewApp` starts with the option on, like `config.Default()`.
+- The `@` roster is filtered where `compose.SetUsers` receives it, which also
+  feeds the send-time `@Name` to `<@ID>` translation. Typing a deactivated
+  user's name by hand is therefore not turned into a mention. Only
+  suggestions were meant to change; this is the cost of not threading a second
+  list through the composer.
+- `/open` is unaffected, as the Filtering section says, so the wiki does not
+  list it among the hidden surfaces.
