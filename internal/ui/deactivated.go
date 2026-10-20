@@ -31,6 +31,11 @@ func (a *App) SetDeactivatedUsers(users map[string]bool) {
 			merged[id] = true
 		}
 	}
+	// Each workspace message carries the cache's whole set, almost always
+	// already known: keep the published map and skip the refilter.
+	if maps.Equal(merged, a.deactivatedUsers) {
+		return
+	}
 	a.publishDeactivatedUsers(merged)
 }
 

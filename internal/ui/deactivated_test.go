@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 
@@ -138,6 +139,24 @@ func TestSetDeactivatedUsersOnlyAdds(t *testing.T) {
 	a.SetDeactivatedUsers(map[string]bool{"U1": false})
 	if a.deactivatedUsers["U1"] {
 		t.Fatal("a false entry marked the user deactivated")
+	}
+}
+
+// A snapshot that adds nothing must not refilter every list: each workspace
+// message carries the whole cache set, almost always already known.
+func TestSetDeactivatedUsersWithNothingNewDoesNotRepublish(t *testing.T) {
+	a := deactivatedApp()
+	a.SetDeactivatedUsers(map[string]bool{"U2": true})
+	before := reflect.ValueOf(a.deactivatedUsers).Pointer()
+	for _, users := range []map[string]bool{{"U2": true}, nil, {"U1": false}} {
+		a.SetDeactivatedUsers(users)
+		if reflect.ValueOf(a.deactivatedUsers).Pointer() != before {
+			t.Fatalf("SetDeactivatedUsers(%v) republished an unchanged set", users)
+		}
+	}
+	a.SetDeactivatedUsers(map[string]bool{"U3": true})
+	if reflect.ValueOf(a.deactivatedUsers).Pointer() == before || !a.deactivatedUsers["U3"] {
+		t.Fatal("a new deactivation was not published")
 	}
 }
 
