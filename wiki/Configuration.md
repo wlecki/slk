@@ -11,6 +11,11 @@ use_slack_sections = true       # use real Slack sidebar sections (default).
                                 # set false to use [sections.*] globs instead.
 download_dir = "~/Downloads"    # where file attachments (`d` keybinding) are
                                 # saved. "~" is expanded to your home directory.
+hide_deactivated_users = true   # hide deactivated people, as the Slack desktop
+                                # client does: their DMs leave the sidebar and
+                                # they are not offered in the channel finder,
+                                # the new-message picker or @ / # autocomplete.
+                                # Set false to show them again. See below.
 
 [appearance]
 theme = "dracula"
@@ -63,6 +68,17 @@ quiet_hours = "22:00-08:00"   # planned
 # Muted channels and DMs never notify — including on mentions and keywords —
 # matching Slack. (This is a behavior change: previously a mention or keyword
 # in a muted channel would still notify.)
+
+[sidebar]
+hide_inactive_after_days = 30   # hide channels and DMs you have not read for this
+                                # many days. 0 turns it off. Never hidden: ones
+                                # with unread messages, ones in a section you
+                                # defined with [sections.*], and the one you
+                                # have open. Default 30.
+width = 30                      # sidebar width in columns, 20 to 60 (default 30).
+                                # `[` and `]` resize it at runtime and save the
+                                # result per workspace as sidebar_width in its
+                                # [workspaces.*] block, which overrides this.
 
 [compose]
 editor = "nvim"   # Ctrl+E editor, used when $VISUAL and $EDITOR are unset
@@ -134,6 +150,25 @@ accent = "#50C878"
 background = "#1A1A2E"
 text = "#E0E0E0"
 ```
+
+## Deactivated users
+
+`[general] hide_deactivated_users` (default `true`) hides people whose Slack
+account is deactivated, matching the Slack desktop client. It applies to:
+
+- DM and app rows in the sidebar (including starred ones and ones with unread
+  messages; the conversation you have open is never hidden, so a permalink or
+  history jump to it still works)
+- the channel finder (`Ctrl+t` / `Ctrl+p`) and the forward picker
+- the new-message picker (`Ctrl+n`)
+- `@` mention autocomplete and `#` autocomplete in both composers
+
+Group DMs that include a deactivated person are kept, as in Slack, and their
+messages still show who wrote them. slk learns who is deactivated from the
+conversation list and from each user's profile. After an upgrade it refreshes
+the people in your open DMs and in the channels you open, so someone you have
+not met in a long while may only be hidden from `@` autocomplete once their
+profile is next fetched. Set the option to `false` to show everyone again.
 
 ## Section resolution
 
