@@ -142,7 +142,11 @@ func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subty
 	// real persistence) don't panic.
 	if h.db != nil {
 		// A change echo carries only content; caching it whole would
-		// reset the reply count and subtype (see cacheChange).
+		// reset the reply count and subtype (see cacheChange). Nor is
+		// it a new arrival, so it leaves the sync state alone: a
+		// change of an old message in a channel reconnect marked
+		// stale would make it look fresh, and the next open would
+		// skip the fetch of what was missed.
 		if changed {
 			h.cacheChange(channelID, ts, text, threadTS, files, blocks, attachments)
 		} else {
@@ -169,19 +173,19 @@ func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subty
 				RawJSON:     string(rawBytes),
 				CreatedAt:   time.Now().Unix(),
 			})
-		}
-		if err := h.db.SetChannelSyncedAt(channelID, time.Now().Unix()); err != nil {
-			debuglog.Cache("OnMessage: SetChannelSyncedAt %s: %v", channelID, err)
-		}
-		// Advance the per-channel ts watermark used by reconnect
-		// backfill. Slack delivers WS messages in order, so receipt
-		// of a message with ts=X implies we have no missing messages
-		// with ts <= X on this channel — that is exactly the
-		// invariant latest_synced_ts encodes. AdvanceChannelLatestSyncedTS
-		// is no-regress, so out-of-order replay (e.g., a delayed
-		// duplicate after reconnect) won't move the cursor backward.
-		if _, err := h.db.AdvanceChannelLatestSyncedTS(channelID, ts); err != nil {
-			debuglog.Cache("OnMessage: AdvanceChannelLatestSyncedTS %s ts=%s: %v", channelID, ts, err)
+			if err := h.db.SetChannelSyncedAt(channelID, time.Now().Unix()); err != nil {
+				debuglog.Cache("OnMessage: SetChannelSyncedAt %s: %v", channelID, err)
+			}
+			// Advance the per-channel ts watermark used by reconnect
+			// backfill. Slack delivers WS messages in order, so receipt
+			// of a message with ts=X implies we have no missing messages
+			// with ts <= X on this channel: that is exactly the
+			// invariant latest_synced_ts encodes. AdvanceChannelLatestSyncedTS
+			// is no-regress, so out-of-order replay (e.g., a delayed
+			// duplicate after reconnect) won't move the cursor backward.
+			if _, err := h.db.AdvanceChannelLatestSyncedTS(channelID, ts); err != nil {
+				debuglog.Cache("OnMessage: AdvanceChannelLatestSyncedTS %s ts=%s: %v", channelID, ts, err)
+			}
 		}
 	}
 

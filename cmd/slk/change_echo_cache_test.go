@@ -215,3 +215,34 @@ func TestChangeEcho_FillsAnEmptyThreadTS(t *testing.T) {
 		t.Errorf("cached thread = %+v, want the parent, then the reply", thread)
 	}
 }
+
+// A change is not a fetch and not a new arrival: it leaves synced_at
+// and latest_synced_ts alone. Reconnect zeroes synced_at so the next
+// open refetches what was missed; an edit of an old message must not
+// make that channel look fresh again.
+func TestChangeEcho_LeavesSyncStateAlone(t *testing.T) {
+	h, db := echoCacheApp(t)
+	if err := db.SetChannelSyncedAt(echoChannel, 0); err != nil {
+		t.Fatalf("SetChannelSyncedAt: %v", err)
+	}
+	if err := db.SetChannelLatestSyncedTS(echoChannel, ""); err != nil {
+		t.Fatalf("SetChannelLatestSyncedTS: %v", err)
+	}
+
+	h.OnMessage(echoChannel, "U1", echoParentTS, "parent, edited", echoParentTS, "", true, true, nil, slack.Blocks{}, nil, "", "")
+	if got := db.GetChannelSyncedAt(echoChannel); got != 0 {
+		t.Errorf("synced_at = %d after a change, want 0", got)
+	}
+	if got := db.GetChannelLatestSyncedTS(echoChannel); got != "" {
+		t.Errorf("latest_synced_ts = %q after a change, want empty", got)
+	}
+
+	const ts = "1700000009.000000"
+	h.OnMessage(echoChannel, "U1", ts, "fresh", "", "", false, false, nil, slack.Blocks{}, nil, "", "")
+	if got := db.GetChannelSyncedAt(echoChannel); got == 0 {
+		t.Error("synced_at = 0 after a new message, want it set")
+	}
+	if got := db.GetChannelLatestSyncedTS(echoChannel); got != ts {
+		t.Errorf("latest_synced_ts = %q after a new message, want %q", got, ts)
+	}
+}
