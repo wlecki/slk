@@ -73,6 +73,11 @@ func (w *WorkspaceContext) recordDeactivatedPeer(ch slack.Channel, db *cache.DB)
 // DeactivatedUsers is the set sent with WorkspaceReadyMsg and
 // WorkspaceSwitchedMsg: every user the cache has as deactivated plus this
 // workspace's IM peers Slack flagged. The caller owns the map.
+//
+// A flagged peer counts only while the cache has no row for it. Once a row
+// exists the cache is the answer: recordDeactivatedPeer marked it when the
+// row was there, and a later profile overwrites it, so a reactivation is not
+// undone by the remembered conversation flag on the next workspace switch.
 func (w *WorkspaceContext) DeactivatedUsers(db *cache.DB) map[string]bool {
 	set := map[string]bool{}
 	if db != nil {
@@ -81,8 +86,14 @@ func (w *WorkspaceContext) DeactivatedUsers(db *cache.DB) map[string]bool {
 		}
 	}
 	if w != nil {
-		w.deletedPeers.Range(func(id, _ any) bool {
-			set[id.(string)] = true
+		w.deletedPeers.Range(func(key, _ any) bool {
+			id := key.(string)
+			if db != nil {
+				if _, err := db.GetUser(id); err == nil {
+					return true
+				}
+			}
+			set[id] = true
 			return true
 		})
 	}

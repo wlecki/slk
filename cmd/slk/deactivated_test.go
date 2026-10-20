@@ -165,6 +165,30 @@ func TestADeactivatedPeerWithNoRowIsStillReported(t *testing.T) {
 	}
 }
 
+// Once a profile has given the peer a row, the cache decides: a reactivation
+// must not be undone by the remembered conversation flag when the workspace
+// is switched back to.
+func TestAProfileOverridesARememberedDeactivatedPeer(t *testing.T) {
+	db := newTestDB(t)
+	wctx := &WorkspaceContext{}
+	wctx.recordDeactivatedPeer(deletedIM("D1", "U1", true), db)
+	if !wctx.DeactivatedUsers(db)["U1"] {
+		t.Fatal("a row-less flagged peer must be in the set")
+	}
+	if err := db.UpsertUser(cache.User{ID: "U1", WorkspaceID: "T1", Deleted: false}); err != nil {
+		t.Fatal(err)
+	}
+	if wctx.DeactivatedUsers(db)["U1"] {
+		t.Fatal("the remembered flag overrode a profile that shows the user active")
+	}
+	if err := db.UpsertUser(cache.User{ID: "U1", WorkspaceID: "T1", Deleted: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !wctx.DeactivatedUsers(db)["U1"] {
+		t.Fatal("a profile that shows the user deactivated must keep them in the set")
+	}
+}
+
 func TestWorkspaceDeactivatedUsersUnionsTheCacheAndPeersAndIsCallerOwned(t *testing.T) {
 	db := newTestDB(t)
 	if err := db.UpsertUser(cache.User{ID: "U1", WorkspaceID: "T1", Deleted: true}); err != nil {
