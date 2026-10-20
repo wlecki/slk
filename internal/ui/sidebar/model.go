@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
+	bubblesansi "github.com/gammons/slk/internal/bubbles/ansi"
 	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/debuglog"
 	emojiutil "github.com/gammons/slk/internal/emoji"
@@ -2134,7 +2134,7 @@ func (m *Model) renderSectionHeaderLabel(name string, width int, cursor string, 
 		// messages.ReactionPillText does for a pill's count): the
 		// header's own on the normal label; on the selected one, what
 		// ReapplyBgAfterResets put back after the cursor glyph's reset.
-		emojiPrefix = placed + ansi.Style{}.ForegroundColor(styles.SectionHeader.GetForeground()).String() + " "
+		emojiPrefix = placed + bubblesansi.ForegroundSGR(styles.SectionHeader.GetForeground()) + " "
 		emojiPrefixSelected = placed + bgAnsi + " "
 		// Charged the footprint it was placed with, never measured: a
 		// placement must not reach a width count or a truncation.

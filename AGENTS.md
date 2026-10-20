@@ -113,6 +113,7 @@ scrollbars, date formatting, case folding, or ID formatting: it already exists.
 | Slack mrkdwn → plain text | `messages.FlattenMrkdwn`, `messages.FlattenMrkdwnWithUserGroups` |
 | Search-term highlighting (ANSI/OSC-safe) | `messages.HighlightSearchTerms`, `messages.SearchHighlightSGR` |
 | Re-assert a background (or background+foreground) after every SGR reset, so nested lipgloss renders don't drop it | `bubbles/ansi.ReapplyAfterResets(text, style)` — the one implementation; `messages.ReapplyBgAfterResets` delegates to it for existing callers. The theme's sequences come from `messages.BgANSI()` / `messages.FgANSI()` |
+| Re-assert a style's foreground after a kitty image placement (its closing `\x1b[39m` resets the foreground, and `ReapplyAfterResets` does not catch it) | `bubbles/ansi.ForegroundSGR(style.GetForeground())`, right after the placement when text in that style follows. Reaction pills, sidebar section headers and the DM header use it |
 | Extract links from message text | `messages.ExtractLinks` |
 | Every link a message offers to `o` (text links + permalinks of messages it shares, from attachment `from_url`) | `messages.MessageLinks(msg)` |
 | Does message text mention the current user? | `mention.InText(text, selfUserID)` |
