@@ -418,7 +418,7 @@ func (m *Model) filter() {
 		if m.forwarding && (!item.Joined || item.Synthetic) {
 			continue
 		}
-		if item.DMUserID != "" && m.deactivated[item.DMUserID] {
+		if core.IsHiddenPeerConversation(item.Type, item.DMUserID, m.deactivated) {
 			continue
 		}
 		idxs = append(idxs, i)

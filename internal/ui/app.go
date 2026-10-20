@@ -2680,7 +2680,7 @@ func (a *App) pushChannelPicks() {
 	hidden := a.hiddenUsers()
 	picks := make([]channelpicker.Channel, 0, len(a.channelPickItems))
 	for _, ch := range a.channelPickItems {
-		if ch.Name == "" || (ch.DMUserID != "" && hidden[ch.DMUserID]) {
+		if ch.Name == "" || core.IsHiddenPeerConversation(ch.Type, ch.DMUserID, hidden) {
 			continue
 		}
 		picks = append(picks, channelpicker.Channel{

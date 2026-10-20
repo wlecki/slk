@@ -1376,12 +1376,6 @@ func (m *Model) SelectByID(id string) {
 	}
 }
 
-// hidesDeactivated reports whether item is a DM or app row with a
-// deactivated peer. Group DMs have no single peer and are never hidden.
-func (m *Model) hidesDeactivated(item ChannelItem) bool {
-	return (item.Type == "dm" || item.Type == "app") && item.DMUserID != "" && m.deactivated[item.DMUserID]
-}
-
 func (m *Model) rebuildFilter() {
 	// Perf instrumentation: rebuildFilter calls readStateReader (a
 	// synchronous SQLite GetWorkspaceReadState) and runs a sort over the
@@ -1415,7 +1409,7 @@ func (m *Model) rebuildFilter() {
 		// Deactivated peers are hidden before staleness so they stay
 		// hidden whatever their read state, starred or not. The active
 		// conversation is the only exemption.
-		if item.ID != m.activeID && m.hidesDeactivated(item) {
+		if item.ID != m.activeID && core.IsHiddenPeerConversation(item.Type, item.DMUserID, m.deactivated) {
 			continue
 		}
 		// Staleness filter: drop items the user hasn't read in a long
