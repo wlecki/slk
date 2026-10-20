@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	bubblesansi "github.com/gammons/slk/internal/bubbles/ansi"
 	"github.com/gammons/slk/internal/bubbles/entrylist"
 	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/debuglog"
@@ -107,6 +108,10 @@ type Model struct {
 	selected     int
 	channelName  string
 	channelTopic string
+	// dmTopic is the DM peer status channelTopic was built from
+	// (SetDMTopic), so the header can draw its emoji as images. Its
+	// zero value means channelTopic is plain text.
+	dmTopic      dmTopic
 	channelType  string // "channel", "private", "dm", "group_dm" -- drives header glyph
 	loading      bool
 	spinnerFrame int                          // braille-spinner frame index for "Loading messages..." animation
@@ -141,6 +146,7 @@ type Model struct {
 	chromeWidth       int
 	chromeChannel     string
 	chromeTopic       string
+	chromeDMTopic     dmTopic
 	chromeChannelType string
 	chromeCacheValid  bool
 
@@ -259,6 +265,7 @@ func (m *Model) SetFocused(focused bool) {
 func (m *Model) HandleEmojiImageReady(url string) {
 	debuglog.ImgFetch("messages.HandleEmojiImageReady: url=%s wholesale_invalidate", url)
 	m.dropCache()
+	m.dropDMTopicChrome()
 	m.dirty()
 }
 
@@ -489,6 +496,11 @@ func (m *Model) SetChannel(name, topic string) {
 			m.imgRenderer.ResetFailed()
 		}
 	}
+	if m.dmTopic != (dmTopic{}) {
+		m.dmTopic = dmTopic{}
+		m.chromeCacheValid = false
+		m.dirty()
+	}
 	m.channelName = name
 	m.channelTopic = topic
 }
@@ -496,12 +508,70 @@ func (m *Model) SetChannel(name, topic string) {
 // SetChannelTopic replaces the header's second line without changing
 // the channel. A DM uses it for the peer's status and DND.
 func (m *Model) SetChannelTopic(topic string) {
-	if m.channelTopic == topic {
+	if m.channelTopic == topic && m.dmTopic == (dmTopic{}) {
 		return
 	}
 	m.channelTopic = topic
+	m.dmTopic = dmTopic{}
 	m.chromeCacheValid = false
 	m.dirty()
+}
+
+// dmTopic is a DM header's topic source: the peer's status and the
+// time and layout its Summary was taken with.
+type dmTopic struct {
+	status peerstatus.Status
+	now    time.Time
+	layout string
+}
+
+// SetDMTopic sets the header's second line to the DM peer's status,
+// st.Summary(now, layout), as SetChannelTopic would. It also keeps st,
+// so in image mode the header draws its huddle and status emoji as
+// images (custom emoji included). SetChannel and SetChannelTopic drop
+// it.
+func (m *Model) SetDMTopic(st peerstatus.Status, now time.Time, layout string) {
+	topic := st.Summary(now, layout)
+	dt := dmTopic{status: st, now: now, layout: layout}
+	if m.channelTopic == topic && m.dmTopic == dt {
+		return
+	}
+	m.channelTopic = topic
+	m.dmTopic = dt
+	m.chromeCacheValid = false
+	m.dirty()
+}
+
+// topicWithImages is the DM header topic with its huddle and status
+// emoji drawn as images, and the uploads they need. ok is false when
+// there is no DM status or none of its emoji could be placed: the
+// caller then draws channelTopic.
+//
+// Each placement ends by resetting the foreground ("\x1b[39m"), and
+// the status text after it is drawn in the topic's styles.Timestamp,
+// so its foreground is re-asserted after every placement.
+func (m *Model) topicWithImages() (string, []func(io.Writer) error, bool) {
+	if m.dmTopic == (dmTopic{}) || m.channelTopic == "" {
+		return "", nil, false
+	}
+	var flushes []func(io.Writer) error
+	placed := false
+	restore := bubblesansi.ForegroundSGR(styles.Timestamp.GetForeground())
+	topic := m.dmTopic.status.SummaryWith(m.dmTopic.now, m.dmTopic.layout, func(shortcode, glyph string) string {
+		p, flush, ok := m.emojiCtx.PlaceShortcode(shortcode)
+		if !ok {
+			return glyph
+		}
+		placed = true
+		if flush != nil {
+			flushes = append(flushes, flush)
+		}
+		return p + restore
+	})
+	if !placed {
+		return "", nil, false
+	}
+	return topic, flushes, true
 }
 
 // SetChannelType sets the channel type used to pick the header glyph
@@ -1319,7 +1389,17 @@ func (m *Model) SetEmojiContext(ctx EmojiContext) {
 	}
 	m.emojiCtx = ctx
 	m.dropCache()
+	m.dropDMTopicChrome()
 	m.dirty()
+}
+
+// dropDMTopicChrome rebuilds the header on the next View when it shows
+// a DM status, whose emoji may be images: an emoji change can change
+// how it draws. A plain topic keeps its cached header.
+func (m *Model) dropDMTopicChrome() {
+	if m.dmTopic != (dmTopic{}) {
+		m.chromeCacheValid = false
+	}
 }
 
 // SetEmojiCustoms updates only the customs map on the active emoji
@@ -1331,6 +1411,7 @@ func (m *Model) SetEmojiContext(ctx EmojiContext) {
 func (m *Model) SetEmojiCustoms(customs map[string]string) {
 	m.emojiCtx.Customs = customs
 	m.dropCache()
+	m.dropDMTopicChrome()
 	m.dirty()
 }
 
@@ -1896,7 +1977,7 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 	// Chrome (header + separator) is cached; only rebuilt on width / channel
 	// name / topic change. This avoids per-keypress strings.Repeat + lipgloss
 	// renders that don't depend on the selection.
-	if !m.chromeCacheValid || m.chromeWidth != width || m.chromeChannel != m.channelName || m.chromeTopic != m.channelTopic || m.chromeChannelType != m.channelType {
+	if !m.chromeCacheValid || m.chromeWidth != width || m.chromeChannel != m.channelName || m.chromeTopic != m.channelTopic || m.chromeDMTopic != m.dmTopic || m.chromeChannelType != m.channelType {
 		// Channel title sits in the message pane, immediately inside the
 		// panel's top border. Bold + TextPrimary on Background matches
 		// the surrounding messages. The panel border itself provides
@@ -1920,13 +2001,24 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 			// assemble the pane border by concatenation (no per-frame
 			// grapheme re-measurement). See ui.borderedTopPane.
 			topicStyle := styles.Timestamp.Width(width).Background(styles.Background)
-			header += "\n" + topicStyle.Render(WordWrap(m.channelTopic, width))
+			topic := m.channelTopic
+			// A DM's emoji as images; their uploads fire with this
+			// build, which a fetch landing or custom emoji arriving
+			// redoes (HandleEmojiImageReady, SetEmojiCustoms).
+			if withImages, flushes, ok := m.topicWithImages(); ok {
+				topic = withImages
+				for _, fl := range flushes {
+					_ = fl(imgpkg.KittyOutput)
+				}
+			}
+			header += "\n" + topicStyle.Render(WordWrap(topic, width))
 		}
 		m.chromeCache = header
 		m.chromeHeight = lipgloss.Height(m.chromeCache)
 		m.chromeWidth = width
 		m.chromeChannel = m.channelName
 		m.chromeTopic = m.channelTopic
+		m.chromeDMTopic = m.dmTopic
 		m.chromeChannelType = m.channelType
 		m.chromeCacheValid = true
 	}
