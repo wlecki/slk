@@ -314,7 +314,7 @@ func (a *App) respondToSelected() tea.Cmd {
 func (a *App) isMessageOpKey(msg tea.KeyMsg) bool {
 	k := a.keys
 	for _, b := range []key.Binding{k.Enter, k.Reaction, k.ReactionNav, k.ListReactions,
-		k.CopyPermalink, k.ForwardMessage, k.MarkUnread, k.SaveThread} {
+		k.CopyPermalink, k.ForwardMessage, k.MarkUnread, k.SaveThread, k.RemovePreview} {
 		if key.Matches(msg, b) {
 			return true
 		}

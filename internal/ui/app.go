@@ -493,6 +493,10 @@ type App struct {
 	// "press b" toast, so it appears once per message.
 	actionQueue   []actionPromptRef
 	promptToasted map[string]bool
+	// previewRemovals holds the link-preview removals in flight, by
+	// channel and ts (see remove_preview.go). Written on the Update
+	// goroutine only.
+	previewRemovals map[string]previewRemoval
 	// userProfile is the K-opened read-only "who is this person?"
 	// modal (see internal/ui/userprofile). profileSvc fetches the
 	// full profile; defaulted to noopProfileService in NewApp so the
@@ -1088,6 +1092,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		reduceActivity,
 		reduceFocus,
 		reduceSend,
+		reduceRemovePreview,
 		reduceActionPrompt,
 		reduceSlashCommand,
 		reduceChannels,
