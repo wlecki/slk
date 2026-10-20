@@ -14,20 +14,30 @@ import (
 // On Windows the ioctl path is unavailable; only the env override and
 // fallback apply.
 func CellPixels(fd int) (pxW, pxH int) {
+	pxW, pxH, _ = MeasureCellPixels(fd)
+	return pxW, pxH
+}
+
+// MeasureCellPixels is CellPixels plus whether the size was actually
+// measured (env override or ioctl). measured is false when it fell
+// back to (8, 16). Kitty emulated placement needs a measured size:
+// WezTerm refuses images when it knows no cell size, and its last
+// stable release can crash on one.
+func MeasureCellPixels(fd int) (pxW, pxH int, measured bool) {
 	if w, ok := atoi(getenv("COLORTERM_CELL_WIDTH")); ok {
 		if h, ok := atoi(getenv("COLORTERM_CELL_HEIGHT")); ok {
 			debuglog.ImgRender("CellPixels: cell_w=%d cell_h=%d source=env_override", w, h)
-			return w, h
+			return w, h, true
 		}
 	}
 	if fd >= 0 {
 		if w, h, ok := winsizePixels(fd); ok {
 			debuglog.ImgRender("CellPixels: cell_w=%d cell_h=%d source=ioctl fd=%d", w, h, fd)
-			return w, h
+			return w, h, true
 		}
 	}
 	debuglog.ImgRender("CellPixels: cell_w=8 cell_h=16 source=fallback (no env, no ioctl)")
-	return 8, 16
+	return 8, 16, false
 }
 
 func atoi(s string) (int, bool) {
