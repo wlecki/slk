@@ -3,7 +3,10 @@ package sidebar
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/gammons/slk/internal/core"
 )
@@ -97,5 +100,31 @@ func TestDeactivatedKeepsCursorOnTheSameItem(t *testing.T) {
 	m.SetDeactivatedUsers(map[string]bool{"U2": true})
 	if m.SelectedID() == "D2" {
 		t.Fatal("cursor stayed on a hidden row")
+	}
+}
+
+// In Slack-sections mode (the default) the rendered sidebar leaves out a
+// deactivated DM in the Direct Messages section, not just VisibleItems.
+func TestDeactivatedDMIsNotRenderedInSlackSections(t *testing.T) {
+	items := []ChannelItem{
+		{ID: "C1", Name: "general", Type: "channel", Section: "CH"},
+		{ID: "D1", Name: "Alice", Type: "dm", DMUserID: "U1", Section: "DMS"},
+		{ID: "D2", Name: "Ghosted", Type: "dm", DMUserID: "U2", Section: "DMS"},
+	}
+	m := New(items)
+	m.SetSectionsProvider(&fakeProvider{ready: true, sections: []SectionMeta{
+		{ID: "CH", Name: "Channels", Type: "channels"},
+		{ID: "DMS", Name: "Direct Messages", Type: "direct_messages"},
+	}})
+	if view := ansi.Strip(m.View(30, 40)); !strings.Contains(view, "Ghosted") {
+		t.Fatalf("fixture: the DM is not rendered before hiding:\n%s", view)
+	}
+	m.SetDeactivatedUsers(map[string]bool{"U2": true})
+	view := ansi.Strip(m.View(30, 40))
+	if strings.Contains(view, "Ghosted") {
+		t.Fatalf("deactivated DM still rendered in Slack-sections mode:\n%s", view)
+	}
+	if !strings.Contains(view, "Alice") {
+		t.Fatalf("the other DM disappeared too:\n%s", view)
 	}
 }
