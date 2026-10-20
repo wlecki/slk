@@ -640,6 +640,15 @@ type MessageDeletedMsg struct {
 	Err       error
 }
 
+// AttachmentRemovedMsg carries the result of the chat.deleteAttachment
+// API call (removing a link preview). On success nothing is done with it:
+// the message_changed echo updates the message. TS is the message's.
+type AttachmentRemovedMsg struct {
+	ChannelID string
+	TS        string
+	Err       error
+}
+
 // OpenLinkMsg requests that a URL be opened. This is the single
 // routing point for all link opens (issue #62): the reduceLinks
 // reducer either navigates in-app (Slack archive permalinks for the

@@ -125,6 +125,9 @@ func (d *Demo) services() services {
 			Delete: func(channelID ids.ChannelID, ts ids.MessageTS) core.Msg {
 				return ui.MessageDeletedMsg{ChannelID: string(channelID), TS: string(ts), Err: errUnavailable}
 			},
+			RemoveAttachment: func(_ string, channelID ids.ChannelID, ts ids.MessageTS, _ int) core.Msg {
+				return ui.AttachmentRemovedMsg{ChannelID: string(channelID), TS: string(ts), Err: errUnavailable}
+			},
 			MarkUnread: func(channelID ids.ChannelID, threadTS ids.ThreadTS, boundaryTS ids.MessageTS, unread int) core.Msg {
 				if threadTS == "" {
 					w.setLastRead(string(channelID), string(boundaryTS))

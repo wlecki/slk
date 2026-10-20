@@ -202,6 +202,9 @@ func TestUnsupportedOperationsSaySo(t *testing.T) {
 	if msg := s.messages.Delete(chGeneral, "1.0").(ui.MessageDeletedMsg); !errors.Is(msg.Err, errUnavailable) {
 		t.Errorf("Delete = %#v", msg)
 	}
+	if msg := s.messages.RemoveAttachment("T1", chGeneral, "1.0", 1).(ui.AttachmentRemovedMsg); !errors.Is(msg.Err, errUnavailable) {
+		t.Errorf("RemoveAttachment = %#v", msg)
+	}
 	if _, err := s.files.Download(ctx, "https://example.com/f", "f"); !errors.Is(err, errUnavailable) {
 		t.Errorf("Download err = %v", err)
 	}

@@ -184,6 +184,14 @@ type MessageService interface {
 	// (channelID, ts). Returns a Msg (typically MessageDeletedMsg).
 	Delete(channelID ids.ChannelID, ts ids.MessageTS) Msg
 
+	// RemoveAttachment dispatches chat.deleteAttachment: it removes the
+	// legacy attachment (link preview) numbered attachmentID from the
+	// message identified by (channelID, ts). teamID is the workspace the
+	// key was pressed in, which the user may have switched away from
+	// since; it, not the active workspace, names the client to use.
+	// Returns a Msg (typically AttachmentRemovedMsg). Never retried.
+	RemoveAttachment(teamID string, channelID ids.ChannelID, ts ids.MessageTS, attachmentID int) Msg
+
 	// MarkUnread dispatches conversations.mark (channel-level) or
 	// subscriptions.thread.mark (when threadTS != "") with the
 	// rolled-back boundaryTS. unreadCount is forwarded to the result
