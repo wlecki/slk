@@ -370,6 +370,8 @@ func connectWorkspace(ctx context.Context, token slackclient.Token, db *cache.DB
 	for _, ch := range channels {
 		item, finderItem := buildChannelItem(ch, wctx, cfg, client.TeamID())
 		upsertChannelInDB(db, ch, item.Type, client.TeamID())
+		// No UI message: the ready message carries the workspace's set.
+		wctx.recordDeactivatedPeer(ch, db)
 
 		if ch.IsIM {
 			if _, ok := wctx.UserNames.Get(ch.User); !ok {

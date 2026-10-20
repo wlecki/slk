@@ -59,6 +59,11 @@ type WorkspaceContext struct {
 	// with WS hydration and item construction, so this must not be a plain
 	// map. Use MarkBotUser/IsBotUser; sync.Map's zero value is ready for use.
 	botUserIDs sync.Map // user ID -> struct{}; positive classifications only
+	// deletedPeers holds the IM peers Slack flagged is_user_deleted, for
+	// peers the users cache has no row to record. Written from connect and
+	// the event owner, read when the UI is handed a workspace. Use
+	// recordDeactivatedPeer / DeactivatedUsers; positive entries only.
+	deletedPeers sync.Map // user ID -> struct{}
 	// SectionStore holds the user's Slack-native sidebar sections for
 	// this workspace. Nil when use_slack_sections is disabled, the
 	// REST bootstrap failed, or this workspace hasn't connected yet.

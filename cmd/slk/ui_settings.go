@@ -16,9 +16,11 @@ type uiSettings struct {
 	TimestampFormat  string
 	TypingIndicators bool
 	StaleAfter       time.Duration
-	MouseWheelLines  int
-	ColoredUsernames bool
-	ThemeOverrides   core.Theme
+	// HideDeactivatedUsers is general.hide_deactivated_users.
+	HideDeactivatedUsers bool
+	MouseWheelLines      int
+	ColoredUsernames     bool
+	ThemeOverrides       core.Theme
 }
 
 // applyUISettings installs s on app. The timestamp formatter feeds the
@@ -32,6 +34,7 @@ func applyUISettings(app *ui.App, s uiSettings) {
 	})
 	app.SetTypingEnabled(s.TypingIndicators)
 	app.SetSidebarStaleThreshold(s.StaleAfter)
+	app.SetHideDeactivatedUsers(s.HideDeactivatedUsers)
 	app.SetMouseWheelLines(s.MouseWheelLines)
 	app.SetColoredUsernames(s.ColoredUsernames)
 	app.SetThemeItems(styles.ThemeNames())
