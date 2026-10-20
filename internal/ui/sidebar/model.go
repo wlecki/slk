@@ -2,14 +2,17 @@ package sidebar
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/debuglog"
 	emojiutil "github.com/gammons/slk/internal/emoji"
+	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/text"
 	"github.com/gammons/slk/internal/ui/messages"
 	"github.com/gammons/slk/internal/ui/peerstatus"
@@ -355,6 +358,74 @@ type Model struct {
 	// compete visually with the focused panel. Set by SetFocused() from
 	// the App layer.
 	focused bool
+
+	// emojiCtx draws section header and DM status emoji as images when
+	// image mode is on (SetEmojiContext, SetEmojiCustoms).
+	// pendingFlushes holds the kitty uploads the placements of the last
+	// buildCache need; View fires them right after that build.
+	emojiCtx       messages.EmojiContext
+	pendingFlushes []func(io.Writer) error
+}
+
+// SetEmojiContext configures emoji-image rendering for section headers
+// and DM status emoji. Invalidates the row cache.
+func (m *Model) SetEmojiContext(ctx messages.EmojiContext) {
+	if ctx.Cells != 1 && ctx.Cells != 2 {
+		ctx.Cells = 2
+	}
+	m.emojiCtx = ctx
+	m.cacheValid = false
+	m.dirty()
+}
+
+// SetEmojiCustoms replaces only the workspace custom emoji map, so
+// custom emoji that arrive after startup (CustomEmojisLoadedMsg) resolve
+// to their artwork. Invalidates the row cache.
+func (m *Model) SetEmojiCustoms(customs map[string]string) {
+	m.emojiCtx.Customs = customs
+	m.cacheValid = false
+	m.dirty()
+}
+
+// HandleEmojiImageReady rebuilds the cached rows after an emoji image
+// fetch finished (or failed), so a cold reservation becomes the image,
+// or the glyph fallback. The URL is unused: every row is rebuilt.
+func (m *Model) HandleEmojiImageReady(string) {
+	m.cacheValid = false
+	m.dirty()
+}
+
+// placeEmoji places the emoji a shortcode names as an image, collecting
+// its upload for View. ok is false when it can't be placed (image mode
+// off, no fetcher, unknown name, failed fetch); the caller then uses
+// its glyph or text form. The placement is emojiCells() wide.
+func (m *Model) placeEmoji(name string) (string, bool) {
+	placement, flush, ok := emojiutil.PlaceShortcode(m.emojiCtx.PlaceCtx, name, m.emojiCtx.Customs, m.emojiCells())
+	if !ok {
+		return "", false
+	}
+	if flush != nil {
+		m.pendingFlushes = append(m.pendingFlushes, flush)
+	}
+	return placement, true
+}
+
+func (m *Model) emojiCells() int {
+	if m.emojiCtx.Cells == 1 {
+		return 1
+	}
+	return 2
+}
+
+// flushEmojiUploads sends the kitty uploads the last buildCache's
+// placements need. Each upload runs at most once however often it is
+// fired, and uploading an image for a row scrolled out of view is
+// harmless, so every one is sent.
+func (m *Model) flushEmojiUploads() {
+	for _, fl := range m.pendingFlushes {
+		_ = fl(imgpkg.KittyOutput)
+	}
+	m.pendingFlushes = nil
 }
 
 // SetSectionsProvider injects a Slack-native sections data source.
@@ -1586,6 +1657,7 @@ func (m *Model) buildCache(width int) {
 	m.cacheValid = true
 	m.cacheWidth = width
 	m.cacheRows = m.cacheRows[:0]
+	m.pendingFlushes = nil
 	m.cacheFiller = lipgloss.NewStyle().Width(width).Background(styles.SidebarBackground).Render("")
 
 	// Per-channel read state for the active workspace. The DB is the
@@ -1858,10 +1930,17 @@ func (m *Model) buildCache(width int) {
 		// A DM peer's status emoji follows the name after a space. It is
 		// charged to the name's budget so a long name truncates instead
 		// of pushing the emoji or the trailer off the row.
+		// In image mode the emoji is drawn as an image, charged its
+		// cell footprint. It is appended after the name is truncated,
+		// so truncation never cuts it.
 		statusGlyph := item.Status.Glyph(statusNow)
 		statusCells := 0
 		if statusGlyph != "" {
 			statusCells = 1 + item.Status.GlyphWidth(statusNow)
+			if placed, ok := m.placeEmoji(item.Status.GlyphShortcode(statusNow)); ok {
+				statusGlyph = placed
+				statusCells = 1 + m.emojiCells()
+			}
 		}
 		maxNameLen := (width - 2) - rowChromeExcludingTrailer - trailerCells - statusCells
 		if maxNameLen < 5 {
@@ -2025,7 +2104,8 @@ func (m *Model) sectionDisplayMeta(sectionKey string) (name, emoji string) {
 //
 // In Slack mode, the `name` parameter is a section ID — we look up the
 // user-visible name and (if any) emoji shortcode from the provider and
-// prepend the resolved emoji.
+// prepend the resolved emoji: an image in image mode (custom emoji
+// included), else the glyph, else the ":code:" text.
 //
 // Known, pre-existing, NOT introduced here: this function takes no
 // width and truncates nothing. buildCache renders the result through
@@ -2041,10 +2121,17 @@ func (m *Model) sectionDisplayMeta(sectionKey string) (name, emoji string) {
 func (m *Model) renderSectionHeaderLabel(name, cursor string, dotStyle lipgloss.Style, bgAnsi string) (string, string) {
 	displayName, emojiCode := m.sectionDisplayMeta(name)
 	emojiPrefix := ""
-	if emojiCode != "" {
-		// kyokomi/emoji.Sprint resolves :shortcode: to unicode; on
-		// unknown shortcodes it returns the input unchanged (which
-		// keeps the colons, giving a graceful textual fallback).
+	if placed, ok := m.placeEmoji(emojiCode); ok {
+		// A placement ends by resetting the foreground ("\x1b[39m"),
+		// which ReapplyBgAfterResets does not catch, so re-assert the
+		// header's own before the name (as messages.ReactionPillText
+		// does for a pill's count).
+		emojiPrefix = placed + ansi.Style{}.ForegroundColor(styles.SectionHeader.GetForeground()).String() + " "
+	} else if emojiCode != "" {
+		// emojiutil.Sprint resolves :shortcode: to the glyph and
+		// appends a space; on unknown shortcodes it returns the input
+		// unchanged (which keeps the colons, giving a graceful textual
+		// fallback).
 		token := ":" + emojiCode + ":"
 		rendered := emojiutil.Sprint(token)
 		if rendered != token {
@@ -2098,6 +2185,7 @@ func (m *Model) View(height, width int) string {
 	// emitting a muted "No channels" placeholder below the Threads row.
 	if !m.cacheValid || m.cacheWidth != width {
 		m.buildCache(width)
+		m.flushEmojiUploads()
 	}
 	m.lastHeight = height
 
