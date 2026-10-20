@@ -202,10 +202,10 @@ Where the code differs from the design above:
   autocomplete can be rebuilt when the set changes. `compose.Model.ChannelPicks`
   is a test accessor, like `MentionUsers`.
 - `NewApp` starts with the option on, like `config.Default()`.
-- The `@` roster is filtered where `compose.SetUsers` receives it, which also
-  feeds the send-time `@Name` to `<@ID>` translation. Typing a deactivated
-  user's name by hand is therefore not turned into a mention. Only
-  suggestions were meant to change; this is the cost of not threading a second
-  list through the composer.
+- The `@` roster marks deactivated users (`mentionpicker.User.Deactivated`)
+  instead of dropping them: `compose.rebuildMentionUsers` leaves them out
+  of the suggestions, while `SetUsers` keeps them for the send-time
+  `@Name` to `<@ID>` translation, so a name typed by hand still becomes a
+  mention.
 - `/open` is unaffected, as the Filtering section says, so the wiki does not
   list it among the hidden surfaces.

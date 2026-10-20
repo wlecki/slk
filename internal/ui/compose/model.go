@@ -1072,6 +1072,9 @@ func (m *Model) rebuildMentionUsers() {
 		if u.IsExternal && !inCh {
 			continue
 		}
+		if u.Deactivated {
+			continue
+		}
 		u.InChannel = inCh
 		derived = append(derived, u)
 	}

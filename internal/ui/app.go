@@ -3150,20 +3150,19 @@ func (a *App) SetUserNames(names map[string]string) {
 	}
 	a.threadPanel.SetUserNames(names)
 
-	// Build user list for mention picker. Deactivated users are left out
-	// of the suggestions only; names keeps them so old messages still
-	// render their authors.
+	// Build user list for mention picker. Deactivated users are marked,
+	// not dropped: compose leaves them out of the suggestions but still
+	// translates a hand-typed "@Name", and names keeps them so old
+	// messages still render their authors.
 	hidden := a.hiddenUsers()
 	users := make([]mentionpicker.User, 0, len(names))
 	for id, displayName := range names {
-		if hidden[id] {
-			continue
-		}
 		users = append(users, mentionpicker.User{
 			ID:          id,
 			DisplayName: displayName,
 			Username:    "",
 			IsExternal:  a.externalUsers[id],
+			Deactivated: hidden[id],
 		})
 	}
 	a.compose.SetUsers(users)
