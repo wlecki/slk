@@ -294,6 +294,7 @@ func TestOnMessage_ChangeEcho_DoesNotSetHasUnread(t *testing.T) {
 				isActive:        func() bool { return true },
 				activeChannelID: func() string { return "C2" },
 				currentUserID:   "USELF",
+				channelTypes:    map[string]string{"C1": "channel"},
 			}
 			// changed=true, from someone else, so only the changed gate
 			// can suppress the write.
@@ -302,6 +303,9 @@ func TestOnMessage_ChangeEcho_DoesNotSetHasUnread(t *testing.T) {
 			s, _ := db.GetChannelReadState("C1")
 			if s.HasUnread {
 				t.Error("HasUnread = true, want false: a change does not make a channel unread")
+			}
+			if n := mentionCount(t, db, "C1"); n != 0 {
+				t.Errorf("MentionCount = %d, want 0: a change does not badge a mention", n)
 			}
 		})
 	}
