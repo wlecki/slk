@@ -129,7 +129,7 @@ func (h *rtmEventHandler) discoverConversation(channelID string) (sidebar.Channe
 	return h.addConversation(*ch)
 }
 
-func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subtype string, edited bool, files []slack.File, blocks slack.Blocks, attachments []slack.Attachment, botID, username string) {
+func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subtype string, changed, edited bool, files []slack.File, blocks slack.Blocks, attachments []slack.Attachment, botID, username string) {
 	// Bot messages (bot_message) carry no user, only a bot_id + username.
 	// Key the row on the bot_id and resolve its avatar/name via bots.info,
 	// mirroring the fetch path's messageAuthor (cmd/slk/users.go).
@@ -181,8 +181,10 @@ func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subty
 
 	// Check if this message should trigger a desktop notification.
 	// Do this before the active workspace check so inactive workspaces
-	// can still trigger notifications.
-	if h.notifier != nil && h.notifyCfg.Enabled {
+	// can still trigger notifications. A change echo (an edit, an unfurl
+	// arriving, a preview removed) re-delivers a message that already
+	// had its chance to notify, so it never does.
+	if !changed && h.notifier != nil && h.notifyCfg.Enabled {
 		isActiveWS := h.isActive != nil && h.isActive()
 		activeChID := ""
 		if h.activeChannelID != nil {
@@ -250,9 +252,9 @@ func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subty
 	isThreadReply := threadTS != "" && threadTS != ts
 	isBroadcast := subtype == "thread_broadcast"
 	channelEligible := !isThreadReply || isBroadcast
-	// Self-sends and edit echoes are excluded because reduceNewMessage
+	// Self-sends and change echoes are excluded because reduceNewMessage
 	// returns BEFORE its read-state tail for both (reducer_send.go, the
-	// IsEdited and IsSelfSent arms). Nothing on the UI side would ever
+	// Changed and IsSelfSent arms). Nothing on the UI side would ever
 	// clear a flag set here, so it would stick until the next channel
 	// entry — the dot would appear on the channel you just posted in.
 	//
@@ -280,11 +282,12 @@ func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subty
 	// U-prefixed user ID — the choice is about intent, not a
 	// behavioral difference.
 	isSelfMessage := userID != "" && userID == h.currentUserID
-	// edited is true only for message_changed
-	// (internal/slack/events.go:307): a re-delivery of a message the
-	// channel already accounted for. Editing it does not make the
-	// channel unread on Slack.
-	shouldMarkChannel := channelEligible && !isSelfMessage && !edited
+	// changed is true only for message_changed (dispatchWebSocketEvent):
+	// a re-delivery of a message the channel already accounted for.
+	// Editing it, or an unfurl landing on it, does not make the channel
+	// unread on Slack. It is not `edited`: an unfurl is a change nobody
+	// edited, and would otherwise mark the channel unread again.
+	shouldMarkChannel := channelEligible && !isSelfMessage && !changed
 	if h.db != nil && shouldMarkChannel {
 		if err := h.db.UpdateChannelReadState(channelID, "", true); err != nil {
 			log.Printf("Warning: failed to set has_unread for %s: %v", channelID, err)
@@ -295,7 +298,7 @@ func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subty
 		// badge can never disagree about whether a message "arrived
 		// unread". Everything shouldMarkChannel excludes -- thread
 		// replies that are not broadcasts, self-authored messages, and
-		// edits -- is excluded from the badge for free.
+		// changes -- is excluded from the badge for free.
 		//
 		// That an edit cannot badge is inherited, not incidental: a
 		// message_changed re-delivery does not make a channel unread on
@@ -371,7 +374,7 @@ func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subty
 	debuglog.Cache("OnMessage: team=%s channel=%s ts=%s subtype=%q thread_ts=%s decision=dispatched_to_app",
 		h.workspaceID, channelID, ts, subtype, threadTS)
 	if h.program != nil {
-		h.program.Send(ui.NewMessageMsg{ChannelID: channelID, Message: item})
+		h.program.Send(ui.NewMessageMsg{ChannelID: channelID, Message: item, Changed: changed})
 	}
 }
 
