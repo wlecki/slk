@@ -74,7 +74,7 @@ func resolveUser(client *slackclient.Client, userID string, userNames *userNameS
 				isBot := u.IsBot || u.IsAppUser
 				isExternal := u.TeamID != "" && u.TeamID != client.TeamID()
 				avatarCache.Preload(userID, u.Profile.Image32)
-				wasDeleted := cachedUserDeleted(db, userID)
+				wasDeleted := knownDeleted(db, userID)
 				db.UpsertUser(cache.User{
 					ID:          userID,
 					WorkspaceID: client.TeamID(),
@@ -108,7 +108,7 @@ func resolveUser(client *slackclient.Client, userID string, userNames *userNameS
 		isExternal := u.TeamID != "" && u.TeamID != client.TeamID()
 		userNames.Set(userID, name)
 		avatarCache.Preload(userID, u.Profile.Image32)
-		wasDeleted := cachedUserDeleted(db, userID)
+		wasDeleted := knownDeleted(db, userID)
 		db.UpsertUser(cache.User{
 			ID:          userID,
 			WorkspaceID: client.TeamID(),

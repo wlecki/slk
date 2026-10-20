@@ -34,7 +34,7 @@ func (h *rtmEventHandler) addConversation(ch slack.Channel) (sidebar.ChannelItem
 	// Before the conversation is published, so the UI hides the row it is
 	// about to receive. The set is global, so this goes out whether or not
 	// the workspace is the active one.
-	if h.wsCtx.recordDeactivatedPeer(ch, h.db) && h.program != nil {
+	if recordDeactivatedPeer(ch, h.db) && h.program != nil {
 		h.program.Send(ui.UserDeactivatedMsg{UserID: ch.User, Deactivated: true})
 	}
 	if h.db != nil {

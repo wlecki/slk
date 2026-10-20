@@ -210,7 +210,7 @@ func (r *userResolver) resolveOneContext(ctx context.Context, userID string) {
 	// just upserted, so we don't re-fetch on every miss in the small
 	// window before UserResolvedMsg lands.
 	r.avatars.Preload(userID, u.Profile.Image32)
-	wasDeleted := cachedUserDeleted(r.db, userID)
+	wasDeleted := knownDeleted(r.db, userID)
 	_ = r.db.UpsertUser(cache.User{
 		ID:               userID,
 		WorkspaceID:      r.teamID,
@@ -466,7 +466,7 @@ func (r *userResolver) applyEdgeUser(u edge.User) {
 	}
 	isExternal := u.TeamID != "" && u.TeamID != r.teamID
 	r.avatars.Preload(u.ID, u.Profile.ImageOriginal)
-	wasDeleted := cachedUserDeleted(r.db, u.ID)
+	wasDeleted := knownDeleted(r.db, u.ID)
 	_ = r.db.UpsertUserFromEdge(r.teamID, cache.EdgeUserUpdate{
 		ID:               u.ID,
 		HomeTeamID:       u.TeamID,

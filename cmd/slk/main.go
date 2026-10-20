@@ -1495,7 +1495,7 @@ func run() error {
 		external, _ := db.ExternalUsers(wctx.TeamID)
 		// Global, not per workspace: the cache's whole set plus this
 		// workspace's IM peers Slack flagged.
-		deactivated := wctx.DeactivatedUsers(db)
+		deactivated := deactivatedUsers(db)
 
 		// Statuses are re-read from the cache, which live changes keep
 		// current, rather than the connect-time items. DND is not
@@ -1721,7 +1721,7 @@ func run() error {
 			external, _ := db.ExternalUsers(wctx.TeamID)
 			// Bootstrap revalidation has already refreshed the cache's
 			// deactivated flags by now.
-			deactivated := wctx.DeactivatedUsers(db)
+			deactivated := deactivatedUsers(db)
 
 			readyStatuses := cachedPeerStatuses(db, wctx.TeamID)
 			wctx.PeerStatus.SeedHuddles(readyStatuses)
