@@ -1,6 +1,7 @@
 package channelfinder
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/gammons/slk/internal/core"
@@ -24,24 +25,33 @@ func filteredIDs(m *Model) []string {
 }
 
 func TestDeactivatedUsersAreAbsentFromTheFinder(t *testing.T) {
-	for _, forwarding := range []bool{false, true} {
-		for _, query := range []string{"", "gone"} {
-			m := New()
-			m.SetItems(deactivatedItems())
-			m.SetDeactivatedUsers(map[string]bool{"U2": true})
-			if forwarding {
-				m.OpenForForwarding()
-			} else {
-				m.Open()
-			}
-			for _, r := range query {
-				m.HandleKey(string(r))
-			}
-			for _, id := range filteredIDs(&m) {
-				if id == "D2" {
-					t.Fatalf("forwarding=%v query=%q: deactivated DM is offered", forwarding, query)
-				}
-			}
+	// The rows that must still be offered, per mode and query. "gone"
+	// matches the deactivated DM's name and the group DM's.
+	for _, tc := range []struct {
+		forwarding bool
+		query      string
+		want       []string
+	}{
+		{false, "", []string{"C1", "D1", "G1"}},
+		{true, "", []string{"C1", "D1", "G1"}},
+		{false, "gone", []string{"G1"}},
+		{true, "gone", []string{"G1"}},
+	} {
+		m := New()
+		m.SetItems(deactivatedItems())
+		m.SetDeactivatedUsers(map[string]bool{"U2": true})
+		if tc.forwarding {
+			m.OpenForForwarding()
+		} else {
+			m.Open()
+		}
+		for _, r := range tc.query {
+			m.HandleKey(string(r))
+		}
+		got := filteredIDs(&m)
+		slices.Sort(got)
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("forwarding=%v query=%q: offered %v, want %v", tc.forwarding, tc.query, got, tc.want)
 		}
 	}
 }
