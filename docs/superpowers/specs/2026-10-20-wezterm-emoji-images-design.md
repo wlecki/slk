@@ -1,6 +1,8 @@
 # Emoji (and kitty images) on WezTerm: emulated unicode placeholders
 
-Status: draft for review. Nothing is implemented yet.
+Status: implemented on `feat/wezterm-emoji-images`. The design below is
+the one that was reviewed; "Implementation notes" at the end lists
+where the code differs and why.
 
 ## Problem
 
@@ -226,6 +228,7 @@ change) carries over. Three changes:
    guard change means the row was rewritten. If the rewrite was EL the
    image is gone; if it was cell writes the image is still there. Sending
    the same `a=p,i,p` again is correct in both cases (it replaces (N,P)).
+   (Not implemented: see Implementation notes, item 3.)
 3. **Force on full redraws and hard scrolls, detected from the bytes.**
    Bubbletea enables ultraviolet's scroll optimization on Linux
    (`cursed_renderer.go:606`, `SetScrollOptim`), and WezTerm moves
@@ -355,3 +358,60 @@ terminal, so later:
 The probe scripts used for the table above are in
 `docs/superpowers/specs/2026-10-20-wezterm-emoji-images-probes/`. Run
 them inside WezTerm with `python3 probeN.py <seconds>`.
+
+## Implementation notes
+
+Where the code differs from the design above, found while building and
+testing it on WezTerm nightly `20261010-e2a98e1b`:
+
+1. **Probe.** WezTerm does not answer `ProbeKittyGraphics`' `a=T,i=…`
+   upload at all: it replies to a transmit only when it carries an image
+   number (`I=`), and never to a successful placement
+   (`kitty_img_transmit`, `kitty_img_place`). Measured: no reply on
+   WezTerm, `OK` on Ghostty. The comment in `capability.go` that said
+   WezTerm "answers the probe" was wrong. Emulated mode probes with a
+   query instead (`ProbeKittyQuery`, `a=q`), which WezTerm answers;
+   native mode keeps the old probe, so kitty and Ghostty see no change.
+2. **Erase is a delete, and that is enough.** `SixelPlacement.Erase`
+   carries `a=d,d=i,i=N,p=P`; probe R1 showed it removes exactly one
+   placement and leaves the cell background alone, so no per-slot
+   background SGR was needed.
+3. **No "re-place without erase" on a guard change.** WezTerm finds a
+   placement to delete or replace through the rows it recorded when the
+   image was placed (`kitty_remove_placement_from_model` walks
+   `info.first_row..+rows`), not by searching the screen. So the painter
+   keeps its sixel order: erases go before the frame's text diff, while
+   those rows are still right, paints after it. A frame whose own diff
+   moves lines or clears the screen (SU, SD, IL, DL, DECSTBM, ED, an
+   alternate-screen switch; `diffMovesLines`) is forced: everything is
+   erased before the diff and painted again after it
+   (`SixelFrame.RepaintOnScroll`). Without that, a hard scroll would
+   carry an image away from the rows WezTerm recorded and no later delete
+   could reach it.
+4. **Resolver.** It parses the whole frame with ultraviolet, the parser
+   bubbletea lays the frame out with, using bubbletea's width method:
+   grapheme widths once the terminal reports mode 2027, tracked by
+   `reduceTerminalModes`, otherwise wcwidth. The cell buffer is reused
+   between frames (`PlaceholderResolver`) and the App memoizes the last
+   frame. A 240x60 frame holding 600 emoji takes about 0.85 ms and 200
+   KB per changed frame. `go.mod` now lists ultraviolet as a direct
+   dependency, at the version bubbletea already pulls in.
+5. **Guards** are computed once per frame for both protocols
+   (`stampFrameGuards`).
+6. **Config and fallbacks.** The key is `[appearance] kitty_placement`
+   (`auto`, `native`, `emulated`). Without a measured cell size,
+   emulated mode is not used and auto falls back to sixel, which is what
+   WezTerm got before. WezTerm under zellij also stays on sixel.
+
+### Verified on WezTerm
+
+With the demo world, kitty emulated placement and emoji served as test
+images (a local harness, not committed): message bodies, two identical
+emoji side by side, reaction pills on their background, the selection
+tint, the thread pane (real images, where sixel drew none), the reaction
+picker over a dimmed backdrop (backdrop images removed, the picker's own
+kept, everything restored on close), switching channels (nothing left
+behind), a window resize, a burst of 40 selection moves, and a live
+message arriving. Not verified by hand: a frame that really triggers
+ultraviolet's hard scroll (covered by `FrameOutput` tests), font zoom,
+and real Slack emoji assets.

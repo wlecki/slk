@@ -16,6 +16,10 @@ download_dir = "~/Downloads"    # where file attachments (`d` keybinding) are
 theme = "dracula"
 timestamp_format = "3:04 PM"
 image_protocol = "auto"   # auto | kitty | sixel | halfblock | off
+kitty_placement = "auto"  # auto | native | emulated: who places kitty images.
+                          # auto = emulated on WezTerm (no unicode
+                          # placeholders), native elsewhere. Native under
+                          # tmux and zellij. See Terminal Compatibility.
 max_image_rows = 20       # cap inline image height in terminal rows
 colored_usernames = false # color each user's name by ID hash (Slack-style)
 
