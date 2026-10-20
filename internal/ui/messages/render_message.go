@@ -123,7 +123,13 @@ func RenderMessage(msg MessageItem, width int, rc *RenderContext, opt RenderOpti
 	var out RenderedMessage
 	avatarStr := opt.Avatar
 	stats := opt.stats
-	line := styles.Username(msg.UserID, rc.ColoredUsernames).Render(msg.UserName) + AuthorStatusSuffix(rc.UserStatuses, msg.UserID, time.Now()) + lipgloss.NewStyle().Background(styles.Background).Render("  ") + styles.Timestamp.Render(msg.Timestamp)
+	// The status image's upload joins the body's: both panes fire
+	// BodyFlushes for visible entries.
+	statusSuffix, statusFlush := AuthorStatus(rc.UserStatuses, msg.UserID, time.Now(), rc.Emoji)
+	if statusFlush != nil {
+		out.BodyFlushes = append(out.BodyFlushes, statusFlush)
+	}
+	line := styles.Username(msg.UserID, rc.ColoredUsernames).Render(msg.UserName) + statusSuffix + lipgloss.NewStyle().Background(styles.Background).Render("  ") + styles.Timestamp.Render(msg.Timestamp)
 
 	// If we have an avatar, reserve space on the left for it
 	contentWidth := width - 4

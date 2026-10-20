@@ -1237,12 +1237,27 @@ func (m *Model) hasAuthor(userID string) bool {
 // AuthorStatusSuffix is what follows an author's name in a message
 // header: a space and their status emoji on the pane background, or ""
 // when they have no live custom status. Shared with the thread pane.
+// AuthorStatus is the same with the emoji drawn as an image.
 func AuthorStatusSuffix(statuses map[string]peerstatus.Status, userID string, now time.Time) string {
 	g := statuses[userID].Glyph(now)
 	if g == "" {
 		return ""
 	}
 	return lipgloss.NewStyle().Background(styles.Background).Render(" " + g)
+}
+
+// AuthorStatus is AuthorStatusSuffix with the status emoji drawn as an
+// image when emoji can place it (image mode, custom emoji included),
+// plus the upload that image needs; else it is AuthorStatusSuffix and
+// a nil flush. Nothing follows the image in the suffix's style (the
+// header goes on with background-only spaces, then the timestamp's own
+// colour), so the placement's foreground reset needs no restoring.
+func AuthorStatus(statuses map[string]peerstatus.Status, userID string, now time.Time, emoji EmojiContext) (string, func(io.Writer) error) {
+	st := statuses[userID]
+	if placed, flush, ok := emoji.PlaceShortcode(st.GlyphShortcode(now)); ok {
+		return lipgloss.NewStyle().Background(styles.Background).Render(" " + placed), flush
+	}
+	return AuthorStatusSuffix(statuses, userID, now), nil
 }
 
 // SetChannelNames sets the channel ID -> name map used to resolve bare
@@ -1274,6 +1289,23 @@ type EmojiContext struct {
 	PlaceCtx emojiutil.PlaceContext
 	Cells    int               // 1 or 2; 0 falls back to 2
 	Customs  map[string]string // workspace custom emoji map; nil = empty
+}
+
+// ImageCells is how many cells an emoji image takes: Cells when it is
+// 1 or 2, else 2.
+func (c EmojiContext) ImageCells() int {
+	if c.Cells == 1 {
+		return 1
+	}
+	return 2
+}
+
+// PlaceShortcode is emojiutil.PlaceShortcode with c's place context,
+// custom emoji and ImageCells. ok is false when the shortcode can't be
+// placed (image mode off, no fetcher, empty or unknown name, failed
+// fetch), so the caller draws its glyph instead.
+func (c EmojiContext) PlaceShortcode(name string) (string, func(io.Writer) error, bool) {
+	return emojiutil.PlaceShortcode(c.PlaceCtx, name, c.Customs, c.ImageCells())
 }
 
 // SetEmojiContext configures the emoji-image rendering path. Should
