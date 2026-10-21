@@ -239,6 +239,49 @@ func TestRemovePreview_SecondPressWhilePendingIsRefused(t *testing.T) {
 	}
 }
 
+// confirmAnswer presses k in the open prompt and returns the
+// RemovePreviewMsg its command delivers, without reducing it: the runtime
+// delivers it later, after keys already queued.
+func confirmAnswer(t *testing.T, a *App, k tea.KeyMsg) RemovePreviewMsg {
+	t.Helper()
+	_, cmd := a.Update(k)
+	for _, m := range drainBatch(cmd) {
+		if rp, ok := m.(RemovePreviewMsg); ok {
+			return rp
+		}
+	}
+	t.Fatalf("pressing %v delivered no RemovePreviewMsg", k)
+	return RemovePreviewMsg{}
+}
+
+// The prompt closes before its answer is reduced, so a second x can open
+// another prompt for the same message in between. The check at confirm is
+// what stops the second removal: Slack renumbers after the first, so its
+// id could name another preview.
+func TestRemovePreview_SecondPromptConfirmedBeforeTheFirstStartsIsRefused(t *testing.T) {
+	a, calls := previewApp(t, timeoutErr(), ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")))
+	pressKeyAll(t, a, keyPress('x'))
+	first := confirmAnswer(t, a, keyPress('1'))
+	pressKeyAll(t, a, keyPress('x'))
+	if !dialogShows(a, "Remove which preview?") {
+		t.Fatal("x before the first answer was reduced should prompt")
+	}
+	second := confirmAnswer(t, a, keyPress('2'))
+
+	for _, m := range []tea.Msg{first, second} {
+		_, cmd := a.Update(m)
+		for _, res := range drainBatch(cmd) {
+			a.Update(res)
+		}
+	}
+	if len(*calls) != 1 || (*calls)[0].id != 1 {
+		t.Errorf("calls = %+v, want only the first removal", *calls)
+	}
+	if !toastShows(a, "Removing preview…") {
+		t.Errorf("toast = %q, want the pending refusal", statusbarText(a))
+	}
+}
+
 // Slack answered ok: the removal is done and only its echo is late, so it
 // must not expire. x says so and sends nothing, however long it takes, and
 // the pane is not touched (Slack's renumbering is not verified).

@@ -220,6 +220,8 @@ func (a *App) removePreview(m RemovePreviewMsg) tea.Cmd {
 	if !hasPreview(previews, m.AttachmentID, m.URL) {
 		return toastWithClear(a, "That preview changed, try again", 3*time.Second)
 	}
+	// x checked this too, but the prompt closes before its answer is
+	// reduced: a second x can open another prompt in between.
 	if r, pending := a.previewRemovalState(m.ChannelID, m.TS, previews); pending {
 		return toastWithClear(a, previewRemovalToast(r), 3*time.Second)
 	}
