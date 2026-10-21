@@ -189,7 +189,9 @@ type MessageService interface {
 	// message identified by (channelID, ts). teamID is the workspace the
 	// key was pressed in, which the user may have switched away from
 	// since; it, not the active workspace, names the client to use.
-	// Returns a Msg (typically AttachmentRemovedMsg). Never retried.
+	// Returns a Msg (typically AttachmentRemovedMsg) whose error is
+	// *AttachmentRefusedError when the preview was certainly not removed.
+	// Never retried.
 	RemoveAttachment(teamID string, channelID ids.ChannelID, ts ids.MessageTS, attachmentID int) Msg
 
 	// MarkUnread dispatches conversations.mark (channel-level) or

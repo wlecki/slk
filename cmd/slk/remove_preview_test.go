@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gammons/slk/internal/core"
+	slackclient "github.com/gammons/slk/internal/slack"
 	"github.com/gammons/slk/internal/ui"
+	"github.com/slack-go/slack"
 )
 
 type fakeRemover struct {
@@ -41,17 +44,60 @@ func TestRemoveAttachmentMapsFieldsAndBoundsTheCall(t *testing.T) {
 	}
 }
 
-func TestRemoveAttachmentWithoutAClientSendsNothing(t *testing.T) {
+// refusal is the reason of err's *core.AttachmentRefusedError, if any.
+func refusal(err error) (string, bool) {
+	var ref *core.AttachmentRefusedError
+	if errors.As(err, &ref) {
+		return ref.Reason, true
+	}
+	return "", false
+}
+
+// With no client the call is never sent: certainly not done.
+func TestRemoveAttachmentWithoutAClientIsRefused(t *testing.T) {
 	got := removeAttachment(context.Background(), nil, "T9", "C1", "1.0", 1)
-	if got.ChannelID != "C1" || got.TS != "1.0" || got.Err == nil {
-		t.Errorf("msg = %+v, want an error for C1 1.0", got)
+	if got.ChannelID != "C1" || got.TS != "1.0" {
+		t.Errorf("msg = %+v, want C1 1.0", got)
+	}
+	if _, ok := refusal(got.Err); !ok {
+		t.Errorf("err = %v, want *core.AttachmentRefusedError", got.Err)
 	}
 }
 
-func TestRemoveAttachmentReturnsTheError(t *testing.T) {
-	boom := errors.New("boom")
-	got := removeAttachment(context.Background(), &fakeRemover{err: boom}, "T1", "C1", "1.0", 1)
-	if !errors.Is(got.Err, boom) {
-		t.Errorf("err = %v, want boom", got.Err)
+// Slack's refusal and a rate limit are certain: the UI may clear its guard.
+// The reason is the bare code, never the response body.
+func TestRemoveAttachmentTranslatesDefiniteRefusals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err    error
+		reason string
+	}{
+		"refused":      {&slackclient.AttachmentRejectedError{Code: "cant_delete_message"}, "cant_delete_message"},
+		"rate limited": {&slack.RateLimitedError{RetryAfter: time.Second}, "rate limited"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := removeAttachment(context.Background(), &fakeRemover{err: tc.err}, "T1", "C1", "1.0", 1)
+			if reason, ok := refusal(got.Err); !ok || reason != tc.reason {
+				t.Errorf("err = %v, want a refusal %q", got.Err, tc.reason)
+			}
+		})
+	}
+}
+
+// Anything else leaves it unknown whether Slack acted, and passes through.
+func TestRemoveAttachmentPassesAmbiguousErrorsThrough(t *testing.T) {
+	for name, err := range map[string]error{
+		"transport":      errors.New("calling chat.deleteAttachment: EOF"),
+		"internal_error": &slackclient.AttachmentRejectedError{Code: "internal_error"},
+		"timeout":        context.DeadlineExceeded,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := removeAttachment(context.Background(), &fakeRemover{err: err}, "T1", "C1", "1.0", 1)
+			if !errors.Is(got.Err, err) {
+				t.Errorf("err = %v, want %v", got.Err, err)
+			}
+			if _, ok := refusal(got.Err); ok {
+				t.Errorf("err = %v counted as a refusal", got.Err)
+			}
+		})
 	}
 }

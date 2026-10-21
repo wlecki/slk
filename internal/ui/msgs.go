@@ -644,6 +644,8 @@ type MessageDeletedMsg struct {
 // API call (removing a link preview). On success nothing is done with it:
 // the message_changed echo updates the message. TS is the message's.
 // Seq names the removal it answers; the UI sets it (adapters leave it 0).
+// Err is *core.AttachmentRefusedError when the preview was certainly not
+// removed; any other Err leaves it unknown whether Slack acted.
 type AttachmentRemovedMsg struct {
 	ChannelID string
 	TS        string

@@ -274,6 +274,18 @@ type CommandError struct {
 
 func (e *CommandError) Error() string { return e.Code }
 
+// AttachmentRefusedError is how adapters report that a link preview was
+// certainly not removed: Slack refused (an ok:false that leaves nothing
+// done), rate limited the call, or the call was never sent. Reason is
+// Slack's error code, or a few words when there is none. Any other error
+// from MessageService.RemoveAttachment leaves it unknown whether Slack
+// acted.
+type AttachmentRefusedError struct {
+	Reason string
+}
+
+func (e *AttachmentRefusedError) Error() string { return e.Reason }
+
 // Theme holds the user's color overrides from config.
 type Theme struct {
 	Primary     string `toml:"primary"`

@@ -351,8 +351,9 @@ func TestRemovePreview_EchoEndsPending(t *testing.T) {
 	}
 }
 
-func TestRemovePreview_FailureToastsAndClearsPending(t *testing.T) {
-	a, calls := previewApp(t, errors.New("cant_delete_message"), ownMessage("1.0", card(1, "One", "https://a.example")))
+// Slack refused: nothing was done, so the user may try again at once.
+func TestRemovePreview_RefusalToastsAndClearsPending(t *testing.T) {
+	a, calls := previewApp(t, &core.AttachmentRefusedError{Reason: "cant_delete_message"}, ownMessage("1.0", card(1, "One", "https://a.example")))
 	pressKeyAll(t, a, keyPress('x'))
 	pressKeyAll(t, a, keyPress('y'))
 	if !toastShows(a, "Could not remove the preview: cant_delete_message") {
@@ -364,6 +365,29 @@ func TestRemovePreview_FailureToastsAndClearsPending(t *testing.T) {
 	}
 	if len(*calls) != 1 {
 		t.Errorf("calls = %d, want 1", len(*calls))
+	}
+}
+
+// Any failure that is not a refusal (a 5xx, a dropped connection, an
+// unreadable answer) may still have happened, like a timeout: it stays
+// pending until the echo, a reload or the timeout.
+func TestRemovePreview_AmbiguousFailureStaysPending(t *testing.T) {
+	a, calls := previewApp(t, errors.New("calling chat.deleteAttachment: HTTP 502 Bad Gateway: <html>"), ownMessage("1.0", card(1, "One", "https://a.example")))
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	a.now = func() time.Time { return now }
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('y'))
+	if !toastShows(a, "No clear answer from Slack, check the message") {
+		t.Errorf("toast = %q, want the no-clear-answer toast", statusbarText(a))
+	}
+	pressKeyAll(t, a, keyPress('x'))
+	if a.confirmPrompt.IsVisible() || len(*calls) != 1 || !toastShows(a, "Removing preview…") {
+		t.Errorf("prompt = %v, calls = %d; an ambiguous failure must stay pending", a.confirmPrompt.IsVisible(), len(*calls))
+	}
+	now = now.Add(31 * time.Second)
+	pressKeyAll(t, a, keyPress('x'))
+	if !dialogShows(a, "Remove preview?") {
+		t.Error("pending must end after 30s")
 	}
 }
 
@@ -522,7 +546,7 @@ func heldRemovals(a *App) *[]removeCall {
 func TestRemovePreview_LateResultOfAnEndedRemovalIsIgnored(t *testing.T) {
 	for name, late := range map[string]error{
 		"ok":      nil,
-		"refused": errors.New("cant_delete_message"),
+		"refused": &core.AttachmentRefusedError{Reason: "cant_delete_message"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			a, _ := previewApp(t, nil, ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")))

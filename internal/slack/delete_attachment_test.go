@@ -2,11 +2,14 @@ package slackclient
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/slack-go/slack"
 )
 
 // The request shape here comes from emacs-slack's slack-remove-preview
@@ -61,21 +64,57 @@ func TestDeleteAttachment_PostsDocumentedForm(t *testing.T) {
 	}
 }
 
-func TestDeleteAttachment_ErrorResponseIsAnError(t *testing.T) {
+// Slack's refusal comes back typed, with its code and without the body,
+// so callers can tell it from an answer that never arrived.
+func TestDeleteAttachment_RefusalIsTyped(t *testing.T) {
 	c, _, _ := deleteAttachmentServer(t, http.StatusOK, `{"ok":false,"error":"cant_delete_message"}`)
 	err := c.DeleteAttachment(context.Background(), "C1", "1.0", 1)
-	if err == nil || !strings.Contains(err.Error(), "cant_delete_message") {
-		t.Errorf("err = %v, want one naming cant_delete_message", err)
+	var rej *AttachmentRejectedError
+	if !errors.As(err, &rej) || rej.Code != "cant_delete_message" {
+		t.Fatalf("err = %v, want *AttachmentRejectedError{cant_delete_message}", err)
+	}
+	if strings.Contains(err.Error(), "body=") {
+		t.Errorf("err = %q carries the body", err)
+	}
+	if rej.MayHaveActed() {
+		t.Error("cant_delete_message must not count as possibly done")
 	}
 }
 
-// A rate limit is returned as it comes, once: a resend after a lost
-// answer can hit an id Slack has already renumbered.
+// Slack documents internal_error and fatal_error as errors it may return
+// after part of the operation succeeded.
+func TestDeleteAttachment_InternalErrorsMayHaveActed(t *testing.T) {
+	for _, code := range []string{"internal_error", "fatal_error"} {
+		c, _, _ := deleteAttachmentServer(t, http.StatusOK, `{"ok":false,"error":"`+code+`"}`)
+		var rej *AttachmentRejectedError
+		if err := c.DeleteAttachment(context.Background(), "C1", "1.0", 1); !errors.As(err, &rej) || !rej.MayHaveActed() {
+			t.Errorf("%s: err = %v, want a refusal that may have acted", code, err)
+		}
+	}
+}
+
+// A body that is not a Slack envelope is no refusal: it says nothing
+// about whether Slack acted.
+func TestDeleteAttachment_UnreadableAnswerIsNotARefusal(t *testing.T) {
+	for _, body := range []string{`{}`, `null`, `{"ok":null}`, `<html>`} {
+		c, _, _ := deleteAttachmentServer(t, http.StatusOK, body)
+		err := c.DeleteAttachment(context.Background(), "C1", "1.0", 1)
+		var rej *AttachmentRejectedError
+		if err == nil || errors.As(err, &rej) {
+			t.Errorf("body %s: err = %v, want an error that is not a refusal", body, err)
+		}
+	}
+}
+
+// A rate limit is returned as it comes, once, as slack-go's type so callers
+// can tell it apart: a resend after a lost answer can hit an id Slack has
+// already renumbered.
 func TestDeleteAttachment_DoesNotRetryOn429(t *testing.T) {
 	c, _, calls := deleteAttachmentServer(t, http.StatusTooManyRequests, ``)
 	err := c.DeleteAttachment(context.Background(), "C1", "1.0", 1)
-	if err == nil || !strings.Contains(err.Error(), "429") {
-		t.Errorf("err = %v, want the rate limit error", err)
+	var rl *slack.RateLimitedError
+	if !errors.As(err, &rl) {
+		t.Errorf("err = %v, want *slack.RateLimitedError", err)
 	}
 	if *calls != 1 {
 		t.Errorf("calls = %d, want exactly 1", *calls)

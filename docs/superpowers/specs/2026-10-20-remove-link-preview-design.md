@@ -83,10 +83,10 @@ attachment list it was read from:
 - `internal/slack`: `(*Client).DeleteAttachment(ctx, channelID, ts string,
   attachmentID int) error`, mirroring `AttachmentAction`: `postForm`,
   `parseOKResponse`, `slackhttp.WithReason(ctx, "delete-single-attachment")`.
-  slk adds no retry, including on 429 (`postForm` makes one `Do` and
-  returns a 429 as `rateLimitError`; nothing above it may wrap this call in
-  `WaitOutRateLimit`): a lost answer is ambiguous and a resend can hit a
-  renumbered id.
+  slk adds no retry, including on 429 (`postForm` makes one `Do`, and
+  `DeleteAttachment` returns a 429 as `*slack.RateLimitedError`; nothing above
+  it may wrap this call in `WaitOutRateLimit`): a lost answer is ambiguous
+  and a resend can hit a renumbered id.
 - `core.MessageService.RemoveAttachment(teamID, channelID, ts string,
   attachmentID int) tea.Msg` returning `AttachmentRemovedMsg{ChannelID, TS,
   Err}`, nil-safe in `MessageServiceFuncs` like the others. Wired in
@@ -143,6 +143,15 @@ Known limits, not changed here:
 - `rtm_handler.OnMessage` caches a change echo as a partial message, which
   resets the cached reply count and subtype of an edited thread parent or
   broadcast. Pre-existing for edits; recorded for a separate fix.
+- The 30-second end of a removal whose outcome is unknown is a trade-off,
+  not a guarantee: if Slack did remove the preview and both its answer and
+  the echo were lost, the pane still shows the old list after 30 seconds, and
+  a second removal could name an id Slack has renumbered. Waiting for fresh
+  server state instead would leave `x` stuck on such a message until a
+  reload.
+- A thread fetch does not refresh a parent the thread pane already shows, so
+  a confirmed removal of a thread parent whose echo was lost lasts until the
+  thread is opened again from a reloaded channel.
 - The parent of a thread opened from the Threads view is built from a text
   summary, so `x` there finds no preview. Open it from the channel instead.
 - The Threads and Activity views keep their own copies of message bodies
@@ -197,7 +206,8 @@ Where the code differs from, or fills in, the design above:
   the `message_changed` echo (an echo that still shows it, such as a text edit
   from another client or a second unfurl landing, leaves it pending), or a
   reload (checked at the next `x`, there is no hook on the load path). It also
-  ends on a failure, and, for a call that timed out, after 30 seconds.
+  ends on a definite refusal, and, for a call whose outcome is unknown, after
+  30 seconds.
 - Each removal has a sequence number from a counter that never resets. The
   UI stamps it on the `AttachmentRemovedMsg` its call returns, and the
   reducer ignores an answer whose number is not the pending removal's: the
@@ -210,9 +220,22 @@ Where the code differs from, or fills in, the design above:
 - The prompt's confirm answers with `RemovePreviewMsg`; the re-check, the
   pending state and the call live in `internal/ui/remove_preview.go`, the
   reducer for both results in `internal/ui/reducer_remove_preview.go`.
-  A call that hits the 10s timeout toasts "Removing the preview timed out,
-  check the message" and stays pending; any other failure toasts "Could not
-  remove the preview: <reason>" and clears the pending state.
+  Only a definite refusal clears the pending state:
+  `core.AttachmentRefusedError`, which `cmd/slk/removeAttachment` makes of
+  Slack's `ok:false` (`slackclient.AttachmentRejectedError`), of an HTTP 429
+  (`*slack.RateLimitedError`) and of a call never sent (no client for the
+  team). It toasts "Could not remove the preview: <reason>", the reason being
+  Slack's bare code, never the response body. Two `ok:false` codes are not
+  definite: Slack documents `internal_error` and `fatal_error` as possibly
+  following a partial success. Those, and every other error (a 5xx, a
+  dropped connection, an unreadable answer or one without an `ok` field),
+  leave it unknown whether Slack acted: the removal stays pending, like a
+  call that hits the 10s timeout. The timeout toasts "Removing the preview
+  timed out, check the message", the others "No clear answer from Slack,
+  check the message".
+- The confirm re-checks for a removal in flight too, not only `x`: the
+  prompt closes before its answer is reduced, so a second `x` can open
+  another prompt for the same message in between.
 - The confirm re-check finds the message with `findActionMessage`, which
   looks a thread parent selected in the thread pane up in that pane first
   (`ParentMsg`), then in the channel windows: the thread pane can be the

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/gammons/slk/internal/core"
 )
 
 var reduceRemovePreview reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
@@ -33,14 +35,19 @@ var reduceRemovePreview reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) 
 			a.previewRemovals[previewRemovalKey(m.ChannelID, m.TS)] = r
 			return nil, true
 		}
+		var refused *core.AttachmentRefusedError
+		if errors.As(m.Err, &refused) {
+			// Certainly not done: the user may try again at once.
+			a.clearPreviewRemoval(m.ChannelID, m.TS)
+			return toastWithClear(a, "Could not remove the preview: "+refused.Reason, 4*time.Second), true
+		}
+		// A timeout, a 5xx, a lost or unreadable answer: Slack may still
+		// have acted. The removal stays pending until the echo, a reload
+		// or the timeout: a resend could hit an id Slack has renumbered.
 		if errors.Is(m.Err, context.DeadlineExceeded) {
-			// Slack may still have acted. The removal stays pending until
-			// the echo, a reload or the timeout: a resend could hit an id
-			// Slack has renumbered.
 			return toastWithClear(a, "Removing the preview timed out, check the message", 4*time.Second), true
 		}
-		a.clearPreviewRemoval(m.ChannelID, m.TS)
-		return toastWithClear(a, "Could not remove the preview: "+m.Err.Error(), 4*time.Second), true
+		return toastWithClear(a, "No clear answer from Slack, check the message", 4*time.Second), true
 	}
 	return nil, false
 }
