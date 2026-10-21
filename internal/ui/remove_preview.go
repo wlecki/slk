@@ -49,14 +49,19 @@ type RemovePreviewMsg struct {
 }
 
 // previewRemoval is one removal in flight: the URL of the preview it
-// targets, and how many previews of that URL the message showed then. The wait ends when the message shows fewer of that
-// URL (the echo, or a reload), on a failure, or after
-// previewRemovalTimeout. Counting, not looking for the (id, URL) pair,
+// targets, and how many previews of that URL the message showed then.
+// The wait ends when the message shows fewer of that URL (the echo, or a
+// reload), on a failure, or after previewRemovalTimeout. Counting, not looking for the (id, URL) pair,
 // handles two previews of one URL: Slack renumbers the twin into the
 // removed one's id, so the pair is still there after the removal.
 // confirmed is set once Slack answered ok: Slack has acted and the echo
 // is only late, so the timeout no longer applies.
+//
+// seq names the removal: the result of the call carries it back, and a
+// result whose seq is not the pending one's is about a removal that is
+// already over.
 type previewRemoval struct {
+	seq       uint64
 	started   time.Time
 	url       string
 	copies    int
@@ -113,14 +118,24 @@ func previewRemovalToast(r previewRemoval) string {
 }
 
 // startPreviewRemoval records a removal of p from a message currently
-// showing previews.
-func (a *App) startPreviewRemoval(channelID, ts string, p messages.RemovablePreview, previews []messages.RemovablePreview) {
+// showing previews, and returns its seq.
+func (a *App) startPreviewRemoval(channelID, ts string, p messages.RemovablePreview, previews []messages.RemovablePreview) uint64 {
 	if a.previewRemovals == nil {
 		a.previewRemovals = map[string]previewRemoval{}
 	}
+	a.previewRemovalSeq++
 	a.previewRemovals[previewRemovalKey(channelID, ts)] = previewRemoval{
-		started: a.now(), url: p.URL, copies: previewURLCount(previews, p.URL),
+		seq: a.previewRemovalSeq, started: a.now(), url: p.URL, copies: previewURLCount(previews, p.URL),
 	}
+	return a.previewRemovalSeq
+}
+
+// pendingPreviewRemoval is the removal in flight for the message if its
+// seq is seq, read as is (no expiry: the answer of an expired removal
+// still says what Slack did).
+func (a *App) pendingPreviewRemoval(channelID, ts string, seq uint64) (previewRemoval, bool) {
+	r, ok := a.previewRemovals[previewRemovalKey(channelID, ts)]
+	return r, ok && r.seq == seq
 }
 
 // previewRemovalEchoed ends the wait for a message whose change echo shows
@@ -197,10 +212,15 @@ func (a *App) removePreview(m RemovePreviewMsg) tea.Cmd {
 	if r, pending := a.previewRemovalState(m.ChannelID, m.TS, previews); pending {
 		return toastWithClear(a, previewRemovalToast(r), 3*time.Second)
 	}
-	a.startPreviewRemoval(m.ChannelID, m.TS, messages.RemovablePreview{AttachmentID: m.AttachmentID, URL: m.URL}, previews)
+	seq := a.startPreviewRemoval(m.ChannelID, m.TS, messages.RemovablePreview{AttachmentID: m.AttachmentID, URL: m.URL}, previews)
 	svc := a.messageSvc
 	return func() tea.Msg {
-		return svc.RemoveAttachment(m.TeamID, ids.ChannelID(m.ChannelID), ids.MessageTS(m.TS), m.AttachmentID)
+		res := svc.RemoveAttachment(m.TeamID, ids.ChannelID(m.ChannelID), ids.MessageTS(m.TS), m.AttachmentID)
+		if r, ok := res.(AttachmentRemovedMsg); ok {
+			r.Seq = seq
+			return r
+		}
+		return res
 	}
 }
 
@@ -210,15 +230,18 @@ var reduceRemovePreview reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) 
 		return a.removePreview(m), true
 
 	case AttachmentRemovedMsg:
+		r, ok := a.pendingPreviewRemoval(m.ChannelID, m.TS, m.Seq)
+		if !ok {
+			// The answer of a removal that is over (its echo came first)
+			// says nothing about the one in flight now, if any.
+			return nil, true
+		}
 		if m.Err == nil {
 			// Slack did it. The message_changed echo shows the result; if
 			// it never comes the removal stays confirmed, not expired, so a
 			// second x cannot name a renumbered id.
-			k := previewRemovalKey(m.ChannelID, m.TS)
-			if r, ok := a.previewRemovals[k]; ok {
-				r.confirmed = true
-				a.previewRemovals[k] = r
-			}
+			r.confirmed = true
+			a.previewRemovals[previewRemovalKey(m.ChannelID, m.TS)] = r
 			return nil, true
 		}
 		if errors.Is(m.Err, context.DeadlineExceeded) {

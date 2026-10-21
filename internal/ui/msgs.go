@@ -643,9 +643,11 @@ type MessageDeletedMsg struct {
 // AttachmentRemovedMsg carries the result of the chat.deleteAttachment
 // API call (removing a link preview). On success nothing is done with it:
 // the message_changed echo updates the message. TS is the message's.
+// Seq names the removal it answers; the UI sets it (adapters leave it 0).
 type AttachmentRemovedMsg struct {
 	ChannelID string
 	TS        string
+	Seq       uint64
 	Err       error
 }
 

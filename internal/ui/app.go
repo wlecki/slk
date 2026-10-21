@@ -495,8 +495,10 @@ type App struct {
 	promptToasted map[string]bool
 	// previewRemovals holds the link-preview removals in flight, by
 	// channel and ts (see remove_preview.go). Written on the Update
-	// goroutine only.
-	previewRemovals map[string]previewRemoval
+	// goroutine only. Each removal's seq comes from previewRemovalSeq,
+	// which never resets.
+	previewRemovals   map[string]previewRemoval
+	previewRemovalSeq uint64
 	// userProfile is the K-opened read-only "who is this person?"
 	// modal (see internal/ui/userprofile). profileSvc fetches the
 	// full profile; defaulted to noopProfileService in NewApp so the

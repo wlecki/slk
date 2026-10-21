@@ -410,3 +410,71 @@ func TestRemovePreview_TwinURLEchoEndsPending(t *testing.T) {
 		t.Fatal("x after the echo should prompt again for the remaining twin")
 	}
 }
+
+// heldRemovals swaps a's remover for one that records each call and
+// answers nothing, so the test delivers each result itself, in the order
+// it chooses.
+func heldRemovals(a *App) *[]removeCall {
+	calls := &[]removeCall{}
+	a.setAttachmentRemoverForTest(func(team string, ch ids.ChannelID, ts ids.MessageTS, id int) core.Msg {
+		*calls = append(*calls, removeCall{team, string(ch), string(ts), id})
+		return nil
+	})
+	return calls
+}
+
+// A's echo ends A before A's HTTP answer arrives, and B starts on the same
+// message. A's late answer is about A: it must not confirm B (a confirmed
+// removal never expires) nor end it.
+func TestRemovePreview_LateResultOfAnEndedRemovalIsIgnored(t *testing.T) {
+	for name, late := range map[string]error{
+		"ok":      nil,
+		"refused": errors.New("cant_delete_message"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, _ := previewApp(t, nil, ownMessage("1.0", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")))
+			calls := heldRemovals(a)
+			now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+			a.now = func() time.Time { return now }
+
+			pressKeyAll(t, a, keyPress('x'))
+			pressKeyAll(t, a, keyPress('1')) // A
+			seqA := a.previewRemovals[previewRemovalKey("C1", "1.0")].seq
+			a.Update(NewMessageMsg{ChannelID: "C1", Changed: true, Message: ownMessage("1.0", card(1, "Two", "https://b.example"))})
+			pressKeyAll(t, a, keyPress('x'))
+			pressKeyAll(t, a, keyPress('y')) // B
+			if len(*calls) != 2 {
+				t.Fatalf("calls = %+v, want A and B", *calls)
+			}
+
+			a.Update(AttachmentRemovedMsg{ChannelID: "C1", TS: "1.0", Seq: seqA, Err: late})
+			b, ok := a.previewRemovals[previewRemovalKey("C1", "1.0")]
+			if !ok || b.seq == seqA || b.confirmed {
+				t.Fatalf("B = %+v, pending = %v; A's answer must leave B pending and unconfirmed", b, ok)
+			}
+			if toastShows(a, "Could not remove the preview") {
+				t.Error("A's late answer toasted")
+			}
+
+			// B never hears back: it expires instead of claiming success.
+			now = now.Add(31 * time.Second)
+			pressKeyAll(t, a, keyPress('x'))
+			if !dialogShows(a, "Remove preview?") {
+				t.Error("B must expire after the timeout")
+			}
+		})
+	}
+}
+
+// The answer of the removal in flight is the one that counts.
+func TestRemovePreview_ResultOfThePendingRemovalConfirmsIt(t *testing.T) {
+	a, _ := previewApp(t, nil, ownMessage("1.0", card(1, "One", "https://a.example")))
+	heldRemovals(a)
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('y'))
+	r := a.previewRemovals[previewRemovalKey("C1", "1.0")]
+	a.Update(AttachmentRemovedMsg{ChannelID: "C1", TS: "1.0", Seq: r.seq})
+	if !a.previewRemovals[previewRemovalKey("C1", "1.0")].confirmed {
+		t.Error("the pending removal's own ok must confirm it")
+	}
+}

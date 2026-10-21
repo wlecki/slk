@@ -198,6 +198,11 @@ Where the code differs from, or fills in, the design above:
   from another client or a second unfurl landing, leaves it pending), or a
   reload (checked at the next `x`, there is no hook on the load path). It also
   ends on a failure, and, for a call that timed out, after 30 seconds.
+- Each removal has a sequence number from a counter that never resets. The
+  UI stamps it on the `AttachmentRemovedMsg` its call returns, and the
+  reducer ignores an answer whose number is not the pending removal's: the
+  echo can end removal A before A's HTTP answer, and a removal B on the same
+  message can start in between. A's late answer must not confirm or end B.
 - A removal Slack answered ok for is marked confirmed and does not expire: if
   the echo never arrives, `x` toasts "Preview removed, reload the channel to
   see it" and sends nothing. The pane is not changed optimistically, since
