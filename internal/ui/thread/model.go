@@ -339,13 +339,17 @@ func (m *Model) AddReply(msg messages.MessageItem) {
 // pressed Enter on a thread reply, before chat.postMessage returned
 // the real Slack TS) with the authoritative msg. Returns true if a
 // row matching localTS was found and swapped, false otherwise.
-// Mirrors messages.Model.SwapLocalSent.
+// Mirrors messages.Model.SwapLocalSent, except that a pane at the bottom
+// stays there (HoldBottom) instead of re-snapping to the reply: the
+// authoritative copy may be taller (an unfurl), and a re-snap shows the
+// top of a reply taller than the pane.
 func (m *Model) SwapLocalSentReply(localTS string, msg messages.MessageItem) bool {
 	if localTS == "" {
 		return false
 	}
 	for i := len(m.replies) - 1; i >= 0; i-- {
 		if m.replies[i].TS == localTS {
+			m.list.HoldBottom()
 			m.replies[i] = msg
 			m.InvalidateCache()
 			return true
@@ -383,11 +387,13 @@ func (m *Model) RemoveLocalSentReply(localTS string) bool {
 //
 // Mirrors messages.Model.UpsertSelfSent — see that method for the
 // motivating bug (Slack's WS-echo Text may flatten paragraph breaks
-// for rich_text_block messages).
+// for rich_text_block messages). A replacement keeps a pane at the
+// bottom there, as SwapLocalSentReply does.
 func (m *Model) UpsertSelfSentReply(msg messages.MessageItem) {
 	if msg.TS != "" {
 		for i := len(m.replies) - 1; i >= 0; i-- {
 			if m.replies[i].TS == msg.TS {
+				m.list.HoldBottom()
 				m.replies[i] = msg
 				m.InvalidateCache()
 				return
@@ -484,10 +490,12 @@ func (m *Model) ChannelNames() map[string]string { return m.channelNames }
 // UpdateMessageInPlace finds the reply with item's TS and applies a
 // message_changed echo to it (MessageItem.ApplyChange: text, edited
 // mark, blocks, attachments; reactions and the rest are kept). Returns
-// true if found.
+// true if found. A pane at the bottom stays there (HoldBottom), so an
+// unfurl or an edit does not push the reply's new rows under the fold.
 func (m *Model) UpdateMessageInPlace(item messages.MessageItem) bool {
 	for i, r := range m.replies {
 		if r.TS == item.TS {
+			m.list.HoldBottom()
 			m.replies[i].ApplyChange(item)
 			m.InvalidateCache()
 			return true
@@ -521,11 +529,13 @@ func (m *Model) RemoveMessageByTS(ts string) bool {
 
 // UpdateParentInPlace applies a message_changed echo to the thread
 // parent if its TS matches item's (see UpdateMessageInPlace). Returns
-// true if updated.
+// true if updated. The parent is the list's first entry, so its growth
+// pushes every reply down; a pane at the bottom stays there.
 func (m *Model) UpdateParentInPlace(item messages.MessageItem) bool {
 	if m.parent.TS != item.TS {
 		return false
 	}
+	m.list.HoldBottom()
 	m.parent.ApplyChange(item)
 	m.InvalidateCache()
 	return true
@@ -885,6 +895,9 @@ func (m *Model) UpdateReaction(messageTS, emojiName, userID string, remove bool)
 		return
 	}
 
+	// A first pill row must not push the bottom of the pane under the
+	// fold (as in messages.Model.UpdateReaction).
+	m.list.HoldBottom()
 	messages.ApplyReaction(msg, emojiName, userID, m.currentUserID, remove)
 	m.InvalidateCache()
 	if m.nav.Active {
