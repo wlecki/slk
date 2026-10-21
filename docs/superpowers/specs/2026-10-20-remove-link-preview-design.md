@@ -162,7 +162,9 @@ Known limits, not changed here:
 ## Tests
 
 - slack: form fields and reason match the documented shape; an error
-  response comes back as an error; no retry on 429.
+  response comes back as an error; no retry on 429. (As built, see the
+  implementation notes: a refusal and a 429 come back typed, and an
+  unreadable answer is not a refusal.)
 - parse: `OriginalURL` carried; removable-preview selection (from_url,
   original_url, neither, `ID == 0`).
 - echo: a `message_changed` without `edited` replaces attachments and does
@@ -173,7 +175,8 @@ Known limits, not changed here:
   else's message, on an ephemeral; the confirm button sends the right id
   and team; a second `x` while pending is refused; a confirm whose
   attachment changed underneath is refused; a failed removal toasts and
-  clears the pending state.
+  clears the pending state. (As built: only a definite refusal clears it,
+  see the implementation notes.)
 - help golden re-blessed.
 
 ## Docs

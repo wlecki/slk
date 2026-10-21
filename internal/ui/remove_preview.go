@@ -10,10 +10,12 @@
 // once the preview is gone, see reduceNewMessage).
 //
 // Slack renumbers the attachments after a removal, so an id is only
-// good against the list it was read from. Three guards follow from
-// that: one removal per message at a time (previewRemovals), a re-check
-// of the id and its URL when the prompt is confirmed, and the team the
-// key was pressed in travels with the request.
+// good against the list it was read from. Four guards follow from
+// that: one removal per message at a time (previewRemovals), kept until
+// Slack surely refused or the message shows the result; a re-check of
+// the id and its URL when the prompt is confirmed; the team the key was
+// pressed in travels with the request; and each removal's seq, so the
+// answer of one never lands on another.
 package ui
 
 import (
@@ -57,9 +59,10 @@ type RemovePreviewMsg struct {
 // previewRemoval is one removal in flight: the URL of the preview it
 // targets, and how many previews of that URL the message showed then.
 // The wait ends when the message shows fewer of that URL (the echo, or a
-// reload), on a failure, or after previewRemovalTimeout. Counting, not looking for the (id, URL) pair,
-// handles two previews of one URL: Slack renumbers the twin into the
-// removed one's id, so the pair is still there after the removal.
+// reload), on a definite refusal, or after previewRemovalTimeout.
+// Counting, not looking for the (id, URL) pair, handles two previews of
+// one URL: Slack renumbers the twin into the removed one's id, so the pair
+// is still there after the removal.
 // confirmed is set once Slack answered ok: Slack has acted and the echo
 // is only late, so the timeout no longer applies.
 //

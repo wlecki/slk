@@ -41,7 +41,8 @@ func (e *AttachmentRejectedError) MayHaveActed() bool {
 // unknown whether Slack removed the preview.
 //
 // No retry, a 429 included: a lost answer is ambiguous, and a resend can
-// hit a renumbered id. Callers must not wrap this in WaitOutRateLimit.
+// hit a renumbered id. Callers must not wrap this in WaitOutRateLimit,
+// which would match the *slack.RateLimitedError and resend.
 func (c *Client) DeleteAttachment(ctx context.Context, channelID, ts string, attachmentID int) error {
 	// The _x_reason emacs-slack sends; see the test for what is known.
 	ctx = slackhttp.WithReason(ctx, "delete-single-attachment")
