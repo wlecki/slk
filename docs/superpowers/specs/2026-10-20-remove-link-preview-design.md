@@ -208,7 +208,8 @@ Where the code differs from, or fills in, the design above:
   see it" and sends nothing. The pane is not changed optimistically, since
   Slack's renumbering is not verified.
 - The prompt's confirm answers with `RemovePreviewMsg`; the re-check, the
-  pending state and the call live in `internal/ui/remove_preview.go`.
+  pending state and the call live in `internal/ui/remove_preview.go`, the
+  reducer for both results in `internal/ui/reducer_remove_preview.go`.
   A call that hits the 10s timeout toasts "Removing the preview timed out,
   check the message" and stays pending; any other failure toasts "Could not
   remove the preview: <reason>" and clears the pending state.
