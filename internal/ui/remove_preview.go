@@ -37,6 +37,12 @@ const previewRemovalTimeout = 30 * time.Second
 // previewLabelWidth is the most cells a preview's name takes in a prompt.
 const previewLabelWidth = 60
 
+// maxPreviewChoices is the most previews the chooser offers: one per digit
+// key, and few enough that the prompt (a row per long label) keeps its
+// Cancel button on a short terminal. The rest can be removed once some of
+// these are gone.
+const maxPreviewChoices = 9
+
 // RemovePreviewMsg is a confirmed removal: the prompt button's answer.
 // URL is what the preview showed when the prompt was built.
 type RemovePreviewMsg struct {
@@ -186,12 +192,17 @@ func (a *App) removePreviewOfSelected() tea.Cmd {
 		return nil
 	}
 	choice := confirmprompt.Choice{Title: "Remove which preview?", Default: -1}
+	if len(previews) > maxPreviewChoices {
+		choice.Body = "The first " + strconv.Itoa(maxPreviewChoices) + " of " + strconv.Itoa(len(previews)) +
+			" previews. Remove one to reach the rest."
+		previews = previews[:maxPreviewChoices]
+	}
 	for i, p := range previews {
-		b := confirmprompt.Button{Label: previewLabel(p), Action: remove(p)}
-		if i < 9 {
-			b.Keys = key.NewBinding(key.WithKeys(strconv.Itoa(i + 1)))
-		}
-		choice.Buttons = append(choice.Buttons, b)
+		choice.Buttons = append(choice.Buttons, confirmprompt.Button{
+			Label:  previewLabel(p),
+			Keys:   key.NewBinding(key.WithKeys(strconv.Itoa(i + 1))),
+			Action: remove(p),
+		})
 	}
 	choice.Buttons = append(choice.Buttons, confirmprompt.Button{Label: "Cancel"})
 	a.openConfirmChoice(choice)

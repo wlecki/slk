@@ -143,6 +143,33 @@ func TestRemovePreview_SeveralPreviewsOffersEach(t *testing.T) {
 	}
 }
 
+// The chooser offers at most nine previews, one per digit key, so the
+// prompt keeps Cancel on a short terminal however long the titles are.
+func TestRemovePreview_ChooserCapsAtNine(t *testing.T) {
+	var atts []blocks.LegacyAttachment
+	for i := 1; i <= 11; i++ {
+		atts = append(atts, card(i, fmt.Sprintf("Preview %d %s", i, strings.Repeat("long title ", 8)), fmt.Sprintf("https://%d.example", i)))
+	}
+	a, calls := previewApp(t, nil, ownMessage("1.0", atts...))
+	a.width, a.height = 80, 24
+	pressKeyAll(t, a, keyPress('x'))
+	for _, want := range []string{"first 9 of 11", "[9] Preview 9", "[Cancel]"} {
+		if !dialogShows(a, want) {
+			t.Errorf("prompt missing %q:\n%s", want, a.confirmPrompt.View())
+		}
+	}
+	if dialogShows(a, "Preview 10") {
+		t.Error("a tenth preview was offered")
+	}
+	if n := strings.Count(a.confirmPrompt.View(), "\n") + 1; n > a.height {
+		t.Errorf("prompt is %d lines, taller than the %d-line terminal", n, a.height)
+	}
+	pressKeyAll(t, a, keyPress('9'))
+	if len(*calls) != 1 || (*calls)[0].id != 9 {
+		t.Errorf("calls = %+v, want one for attachment 9", *calls)
+	}
+}
+
 func TestRemovePreview_SeveralPreviewsCancelButton(t *testing.T) {
 	a, calls := previewApp(t, nil, ownMessage("1.0", card(1, "First", "https://a.example"), card(2, "Second", "https://b.example")))
 	pressKeyAll(t, a, keyPress('x'))

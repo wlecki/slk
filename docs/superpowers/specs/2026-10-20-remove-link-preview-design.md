@@ -217,6 +217,10 @@ Where the code differs from, or fills in, the design above:
   looks a thread parent selected in the thread pane up in that pane first
   (`ParentMsg`), then in the channel windows: the thread pane can be the
   only one holding it.
+- The chooser offers at most nine previews, one per digit key, so a prompt
+  of long titles (a button row each) keeps its Cancel button on a short
+  terminal. With more, its body says it shows the first nine; the rest can
+  be removed once some of these are gone.
 - The help golden did not change (the new binding is below the first page
   the golden captures), so it was not re-blessed.
 - Not done, as designed: the `message_changed` echo that arrives before the
