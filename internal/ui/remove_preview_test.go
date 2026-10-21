@@ -382,6 +382,29 @@ func TestRemovePreview_ThreadReply(t *testing.T) {
 	}
 }
 
+// The thread parent is selectable in the thread pane, and its prompt must
+// work when no channel window has the parent loaded (a thread opened from
+// Activity, or a parent older than the loaded history).
+func TestRemovePreview_ThreadParent(t *testing.T) {
+	a, calls := previewApp(t, nil, ownMessage("9.0"))
+	a.threadPanel.SetThread(ownMessage("P1", card(1, "One", "https://a.example")), []messages.MessageItem{ownMessage("R1")}, "C1", "P1")
+	a.threadVisible = true
+	a.focusedPanel = PanelThread
+	a.threadPanel.GoToTop()
+	a.threadPanel.MoveUp() // from the first reply onto the parent
+	if sel, _ := a.threadPanel.SelectedMessage(); sel.TS != "P1" {
+		t.Fatalf("selected %q, want the parent", sel.TS)
+	}
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('y'))
+	if toastShows(a, "That preview changed") {
+		t.Error("the parent's confirm was refused")
+	}
+	if len(*calls) != 1 || (*calls)[0] != (removeCall{"T1", "C1", "P1", 1}) {
+		t.Errorf("calls = %+v, want one for parent P1", *calls)
+	}
+}
+
 func TestRemovePreview_IDIsThePositionWhenSlackSentNone(t *testing.T) {
 	a, calls := previewApp(t, nil, ownMessage("1.0",
 		blocks.LegacyAttachment{Title: "bot"},

@@ -212,6 +212,10 @@ Where the code differs from, or fills in, the design above:
   A call that hits the 10s timeout toasts "Removing the preview timed out,
   check the message" and stays pending; any other failure toasts "Could not
   remove the preview: <reason>" and clears the pending state.
+- The confirm re-check finds the message with `findActionMessage`, which
+  looks a thread parent selected in the thread pane up in that pane first
+  (`ParentMsg`), then in the channel windows: the thread pane can be the
+  only one holding it.
 - The help golden did not change (the new binding is below the first page
   the golden captures), so it was not re-blessed.
 - Not done, as designed: the `message_changed` echo that arrives before the
