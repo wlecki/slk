@@ -1065,20 +1065,12 @@ func run() error {
 				return ui.MessageDeletedMsg{ChannelID: chIDStr, TS: tsStr, Err: err}
 			},
 			RemoveAttachment: func(teamID string, channelID ids.ChannelID, ts ids.MessageTS, attachmentID int) core.Msg {
-				chIDStr, tsStr := string(channelID), string(ts)
 				// The user may have switched workspaces since pressing the key.
-				wctx := router.ByID(teamID)
-				if wctx == nil || wctx.Client == nil {
-					return ui.AttachmentRemovedMsg{ChannelID: chIDStr, TS: tsStr, Err: fmt.Errorf("workspace %q is unavailable", teamID)}
+				var client attachmentRemover
+				if wctx := router.ByID(teamID); wctx != nil && wctx.Client != nil {
+					client = wctx.Client
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				// One attempt, never WaitOutRateLimit: see DeleteAttachment.
-				err := wctx.Client.DeleteAttachment(ctx, chIDStr, tsStr, attachmentID)
-				if err != nil {
-					log.Printf("Warning: failed to remove preview %s/%s #%d: %v", chIDStr, tsStr, attachmentID, err)
-				}
-				return ui.AttachmentRemovedMsg{ChannelID: chIDStr, TS: tsStr, Err: err}
+				return removeAttachment(context.Background(), client, teamID, channelID, ts, attachmentID)
 			},
 			MarkUnread: func(channelID ids.ChannelID, threadTS ids.ThreadTS, boundaryTS ids.MessageTS, unreadCount int) core.Msg {
 				chIDStr := string(channelID)
