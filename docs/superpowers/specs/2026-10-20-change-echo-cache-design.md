@@ -37,6 +37,7 @@ the existing row instead of an upsert:
 // internal/cache/messages.go
 type MessageChange struct {
 	Text        string
+	ThreadTS    string          // fills thread_ts only on a row that has none
 	Files       json.RawMessage // nil or empty: the message has none
 	Blocks      json.RawMessage
 	Attachments json.RawMessage

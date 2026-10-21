@@ -7,20 +7,26 @@ import (
 	"github.com/gammons/slk/internal/ui/messages"
 )
 
-// withPreview is a message carrying one unfurl and one reaction.
+// withPreview is a message carrying one unfurl, one block, one file and
+// one reaction.
 func withPreview(ts string) messages.MessageItem {
 	return messages.MessageItem{
 		TS: ts, UserID: "U1", UserName: "alice", Text: "see https://example.com",
 		ReplyCount: 2,
 		Reactions:  []messages.ReactionItem{{Emoji: "tada", Count: 1}},
+		Blocks:     []blocks.Block{blocks.DividerBlock{}},
+		Attachments: []messages.Attachment{
+			{Kind: "file", Name: "notes.txt", URL: "https://example.com/notes.txt"},
+		},
 		LegacyAttachments: []blocks.LegacyAttachment{
 			{ID: 1, Title: "Example", FromURL: "https://example.com"},
 		},
 	}
 }
 
-// The message_changed echo Slack sends once the preview is removed: the
-// text is the same, the attachments are gone, nobody edited anything.
+// The message_changed echo Slack sends once the preview (and here the
+// block and the file too) is gone: the text is the same, nobody edited
+// anything.
 func previewRemovedEcho(ts string) messages.MessageItem {
 	return messages.MessageItem{TS: ts, UserID: "U1", UserName: "alice", Text: "see https://example.com"}
 }
@@ -42,14 +48,15 @@ func TestChangeEcho_AppliesToBothPanes(t *testing.T) {
 			if name == "thread reply" {
 				pane = a.threadPanel
 			}
-			echo := previewRemovedEcho(ts)
-			echo.Attachments = nil
-			if !pane.UpdateMessageInPlace(echo) {
+			if !pane.UpdateMessageInPlace(previewRemovedEcho(ts)) {
 				t.Fatal("UpdateMessageInPlace = false for a message the pane holds")
 			}
 			got := read[name]()
 			if len(got.LegacyAttachments) != 0 {
 				t.Errorf("legacy attachments = %+v, want none after the preview was removed", got.LegacyAttachments)
+			}
+			if len(got.Blocks) != 0 || len(got.Attachments) != 0 {
+				t.Errorf("blocks=%+v attachments=%+v, want both replaced by the echo's (none)", got.Blocks, got.Attachments)
 			}
 			if got.IsEdited {
 				t.Error("IsEdited set by an echo without `edited`")

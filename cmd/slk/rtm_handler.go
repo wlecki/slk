@@ -368,7 +368,7 @@ func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subty
 			debuglog.Cache("OnMessage: team=%s channel=%s ts=%s subtype=%q thread_ts=%s decision=skipped_thread_reply_inactive",
 				h.workspaceID, channelID, ts, subtype, threadTS)
 		default:
-			debuglog.Cache("OnMessage: team=%s channel=%s ts=%s subtype=%q thread_ts=%s decision=skipped_self_or_edit_inactive",
+			debuglog.Cache("OnMessage: team=%s channel=%s ts=%s subtype=%q thread_ts=%s decision=skipped_self_or_change_inactive",
 				h.workspaceID, channelID, ts, subtype, threadTS)
 		}
 		if h.program != nil {
