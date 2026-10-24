@@ -628,12 +628,13 @@ type RenderSlackMarkdownOpts struct {
 	Customs      map[string]string        // workspace custom emoji map; may be nil
 	EmojiFlushes *[]func(io.Writer) error // append-only; may be nil
 
-	// Width is the content width the result will be wrapped to, and is
-	// used only by the code-block path: a fenced block is hard-wrapped
-	// and padded to exactly this width so every one of its lines
-	// carries the surface background edge to edge, the way Slack draws
-	// one. 0 leaves the old behaviour (block as wide as its longest
-	// line, ragged right edge).
+	// Width is the content width the result will be wrapped to. A
+	// fenced code block is hard-wrapped and padded to exactly this width
+	// so every one of its lines carries the surface background edge to
+	// edge, the way Slack draws one. A quoted line is word-wrapped to the
+	// width left after its bar, so every wrapped row gets a bar. 0 leaves
+	// both unwrapped (the code block as wide as its longest line, the
+	// quote as one row).
 	Width int
 }
 
@@ -945,6 +946,7 @@ func SlackMrkdwnToCommonMarkWithUserGroups(text string, userNames map[string]str
 		if strings.HasPrefix(line, "&gt; ") || strings.HasPrefix(line, "> ") {
 			quoted := strings.TrimPrefix(line, "&gt; ")
 			quoted = strings.TrimPrefix(quoted, "> ")
+			quoted = slackMrkdwnToCommonMarkInline(quoted, userNames, channelNames, userGroups)
 			quoted = slackEntityDecoder.Replace(quoted)
 			line = "> " + quoted
 		} else {

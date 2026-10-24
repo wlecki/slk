@@ -3,6 +3,7 @@ package messages
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,7 +39,7 @@ type RenderOptions struct {
 	ReplyAffordance bool   // "[N replies ->]" under a parent (channel pane)
 	EditedMark      bool   // "(edited)" after the timestamp (channel pane)
 	BroadcastLabel  bool   // "↳ replied to a thread" label (channel pane)
-	ImageHits       bool   // record image hit rects (both panes)
+	ImageHits       bool   // record image and file hit rects (both panes)
 	SixelRows       bool   // record sixel rows (channel pane)
 	stats           *entryPerfStats
 }
@@ -48,7 +49,7 @@ type RenderedMessage struct {
 	Content      string
 	Header       string // the author line (with "(edited)"), for SelectedHeader
 	HeaderBudget int
-	Hits         []entrylist.Hit // image hits (when ImageHits), then reaction pills
+	Hits         []entrylist.Hit // image and file hits (when ImageHits), then reaction pills
 	SixelRows    map[int]sixelEntry
 	// Kitty uploads by source: each pane keeps its own upload order.
 	BodyFlushes, BlockFlushes, ReactionFlushes, AttachmentFlushes []func(io.Writer) error
@@ -410,12 +411,20 @@ func RenderMessage(msg MessageItem, width int, rc *RenderContext, opt RenderOpti
 			stats.blockKitTotal += time.Since(bkT0)
 			stats.blockKitCount++
 		}
+		if !opt.SixelRows {
+			// A pane without the sixel placement pipeline (the thread
+			// pane, plan decision P3) must not keep the renderer's
+			// blank placeholder rows for a block image: splice the
+			// halfblock fallback into the lines so the image stays
+			// visible as text instead of vanishing.
+			blockkit.SpliceSixelFallbacks(res.Lines, res.SixelRows)
+		}
 		bkLines = append(bkLines, res.Lines...)
 		out.BlockFlushes = append(out.BlockFlushes, res.Flushes...)
 		if opt.SixelRows {
 			rowOffset := preAttachmentRows + startInBk
 			for k, v := range res.SixelRows {
-				allSixel[rowOffset+k] = sixelEntry{bytes: v.Bytes, fallback: v.Fallback, height: v.Height, width: v.Width}
+				allSixel[rowOffset+k] = sixelEntry{key: v.Key, bytes: v.Bytes, fallback: v.Fallback, height: v.Height, width: v.Width, col: v.Col}
 			}
 		}
 		// Note: res.Hits is intentionally NOT appended to out.Hits in
@@ -458,12 +467,18 @@ func RenderMessage(msg MessageItem, width int, rc *RenderContext, opt RenderOpti
 			stats.legacyImgPlaceholderTotal += phTotal
 			stats.legacyImgPlaceholderCount += phCount
 		}
+		if !opt.SixelRows {
+			// Same as the block branch above: keep legacy-attachment
+			// images visible as halfblock text in panes that cannot
+			// paint sixel placements.
+			blockkit.SpliceSixelFallbacks(res.Lines, res.SixelRows)
+		}
 		bkLines = append(bkLines, res.Lines...)
 		out.BlockFlushes = append(out.BlockFlushes, res.Flushes...)
 		if opt.SixelRows {
 			rowOffset := preAttachmentRows + startInBk
 			for k, v := range res.SixelRows {
-				allSixel[rowOffset+k] = sixelEntry{bytes: v.Bytes, fallback: v.Fallback, height: v.Height, width: v.Width}
+				allSixel[rowOffset+k] = sixelEntry{key: v.Key, bytes: v.Bytes, fallback: v.Fallback, height: v.Height, width: v.Width, col: v.Col}
 			}
 		}
 		// Note: res.Hits is intentionally NOT appended to out.Hits in
@@ -528,6 +543,30 @@ func RenderMessage(msg MessageItem, width int, rc *RenderContext, opt RenderOpti
 				URL:    att.URL,
 				Thumbs: imgThumbs,
 			}, rc.ImageChannel, msg.TS, contentWidth, rowCursor, attIdx, contentColBase)
+			if !opt.SixelRows {
+				// Same treatment as the block branches above: a pane
+				// without the sixel pipeline keeps the image visible
+				// as halfblock text. Attachment SixelRows keys are
+				// entry-relative (RenderBlock stamps them with the
+				// rowCursor it was passed); shift them to be relative
+				// to res.Lines, which starts at that same row. Splice
+				// into a COPY: on RenderBlock's prerendered fast path
+				// res.Lines shares its backing array with the
+				// fetcher's cached Render, and writing through it
+				// would replace the cache's blank reserved rows with
+				// halfblock for every later render, including the
+				// channel pane's.
+				shifted := make(map[int]blockkit.SixelEntry, len(res.SixelRows))
+				for k, v := range res.SixelRows {
+					shifted[k-rowCursor] = blockkit.SixelEntry{
+						Key: v.Key, Bytes: v.Bytes, Fallback: v.Fallback,
+						Height: v.Height, Width: v.Width,
+					}
+				}
+				lines := slices.Clone(res.Lines)
+				blockkit.SpliceSixelFallbacks(lines, shifted)
+				res.Lines = lines
+			}
 			attachLineSlices = append(attachLineSlices, res.Lines)
 			out.AttachmentFlushes = append(out.AttachmentFlushes, res.Flushes...)
 			if opt.SixelRows {
@@ -545,6 +584,15 @@ func RenderMessage(msg MessageItem, width int, rc *RenderContext, opt RenderOpti
 						RowStart: h.RowStartInEntry, RowEnd: h.RowEndInEntry,
 						ColStart: h.ColStart, ColEnd: h.ColEnd,
 						Kind: entrylist.HitImage, Key: h.FileID, Aux: h.AttIdx,
+					})
+				} else if att.Kind == "file" && att.DownloadURL != "" && len(res.Lines) > 0 {
+					// A "[File] <name>" line: clicking it downloads
+					// the file, like `d`.
+					imageHits = append(imageHits, entrylist.Hit{
+						RowStart: rowCursor, RowEnd: rowCursor + res.Height,
+						ColStart: contentColBase,
+						ColEnd:   contentColBase + lipgloss.Width(res.Lines[0]),
+						Kind:     entrylist.HitFile, Aux: attIdx,
 					})
 				}
 			}
@@ -607,13 +655,17 @@ func RenderMessage(msg MessageItem, width int, rc *RenderContext, opt RenderOpti
 	if len(allSixel) == 0 {
 		allSixel = nil
 	} else {
-		// Stamp every entry with the message's content column. Block kit,
-		// legacy, and attachment entries all start at contentColBase
-		// within linesNormal; without this the painter would place the
-		// image at the pane's content-left edge (col 0) instead of its
-		// placeholder, shifting it left under the avatar / border.
+		// Stamp every entry with the message's content column plus the
+		// image's own column offset within the rendered lines. Block
+		// kit, legacy, and attachment entries all start at
+		// contentColBase; section accessories sit right of their body
+		// text and legacy attachment images right of the color stripe,
+		// both of which carry Col offsets from their renderers. Without
+		// this the painter would place the image at the pane's
+		// content-left edge (col 0) instead of its placeholder,
+		// shifting it left under the avatar / border.
 		for k, v := range allSixel {
-			v.col = contentColBase
+			v.col = contentColBase + v.col
 			allSixel[k] = v
 		}
 	}

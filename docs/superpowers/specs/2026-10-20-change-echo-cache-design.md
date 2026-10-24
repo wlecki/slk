@@ -23,8 +23,9 @@ So a change echo rewrites the cached row with:
   history fetch stored (`reply_count`, `subtype`, `reply_users`,
   `latest_reply`, `bot_id`, `username`, ...) is gone too.
 
-The live panes are fine since `feat/remove-link-preview`: they apply the
-echo with `MessageItem.ApplyChange`, which replaces only the content.
+The live panes are fine since the `message_changed` fix (the previous
+commit): they apply the echo with `MessageItem.ApplyChange`, which
+replaces only the content.
 The cache never got the same treatment. This makes it match.
 
 ## The fix

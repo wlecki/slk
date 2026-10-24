@@ -307,6 +307,9 @@ func reduceMouseClick(a *App, m tea.MouseClickMsg) tea.Cmd {
 		if cmd, hit := a.openImagePreviewAt(a.messagepane, a.activeChannelID, px, py); hit {
 			return cmd
 		}
+		if cmd, hit := a.downloadFileAt(a.messagepane, a.activeChannelID, px, py); hit {
+			return cmd
+		}
 		a.drag.Begin(PanelMessages, px, py)
 		a.messagepane.BeginSelectionAt(py, px)
 		// Remember whether this press actually landed on a message
@@ -322,12 +325,37 @@ func reduceMouseClick(a *App, m tea.MouseClickMsg) tea.Cmd {
 		if !ok || panel != PanelThread || py < 0 {
 			return nil
 		}
+		// The breadcrumb's channel label: clicking it closes the thread and
+		// returns to the channel, the mouse equivalent of the hint's esc and
+		// the up-level navigation the breadcrumb names. Checked before the
+		// content hit tests: the breadcrumb row is chrome above every reply.
+		if a.threadPanel.HitTestBreadcrumbChannel(py, px) {
+			// An upload in flight refuses the close (CloseThread drops
+			// it), so refuse the whole sequence: switching mode first
+			// would drop the user out of insert mode with the thread
+			// still open. Mirrors the upload guards on every other
+			// thread-closing path.
+			if a.compose.Uploading() || a.threadCompose.Uploading() {
+				return toastWithClear(a, "Upload in progress", 2*time.Second)
+			}
+			// Same tail as esc out of insert mode: CloseThread handles
+			// cancelEdit, and a queued action prompt opens on the way
+			// back to normal.
+			a.SetMode(ModeNormal)
+			a.compose.Blur()
+			a.CloseThread()
+			return a.tryOpenActionPrompt()
+		}
+
 		// Hit-test reactions and inline images first on the thread
 		// pane too.
 		if cmd, hit := a.toggleReactionAt(a.threadPanel, a.threadPanel.ChannelID(), a.threadPanel.Replies(), px, py); hit {
 			return cmd
 		}
 		if cmd, hit := a.openImagePreviewAt(a.threadPanel, a.threadPanel.ChannelID(), px, py); hit {
+			return cmd
+		}
+		if cmd, hit := a.downloadFileAt(a.threadPanel, a.threadPanel.ChannelID(), px, py); hit {
 			return cmd
 		}
 		a.drag.Begin(PanelThread, px, py)
@@ -366,4 +394,23 @@ func (a *App) openImagePreviewAt(p contentPane, channelID string, px, py int) (t
 	return func() tea.Msg {
 		return messages.OpenImagePreviewMsg{Channel: channelID, TS: ts, AttIdx: attIdx}
 	}, true
+}
+
+// downloadFileAt downloads and opens the file whose "[File]" line is
+// at pane-local (px, py) in p, if there is one: the click form of `d`.
+func (a *App) downloadFileAt(p contentPane, channelID string, px, py int) (tea.Cmd, bool) {
+	contentY := py - p.ChromeHeight()
+	if contentY < 0 {
+		return nil, false
+	}
+	ts, attIdx, hit := p.HitTestFile(contentY, px)
+	if !hit {
+		return nil, false
+	}
+	msg, ok := a.findMessageInActiveChannel(channelID, ts)
+	if !ok || attIdx < 0 || attIdx >= len(msg.Attachments) {
+		return nil, false
+	}
+	att := msg.Attachments[attIdx]
+	return func() tea.Msg { return DownloadFileMsg{Attachment: att} }, true
 }

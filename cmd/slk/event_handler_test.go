@@ -338,9 +338,12 @@ func TestOnMessage_DispatchesChangedAndEditedSeparately(t *testing.T) {
 
 // A change echo does not notify again, even for a message that mentions
 // the user; the same message as a fresh event does. The notifier runs a
-// command that appends the body to a file, so the test can see it.
+// command that appends the body to a file, so the test can see it. The
+// file's path reaches the command through the environment, so a temp dir
+// with spaces in it still works.
 func TestOnMessage_ChangeEcho_DoesNotNotify(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "notified")
+	t.Setenv("SLK_TEST_NOTIFY_OUT", out)
 	h := &rtmEventHandler{
 		workspaceID:     "T1",
 		currentUserID:   "USELF",
@@ -350,7 +353,7 @@ func TestOnMessage_ChangeEcho_DoesNotNotify(t *testing.T) {
 		isActive:        func() bool { return false },
 		activeChannelID: func() string { return "C2" },
 		wsCtx:           &WorkspaceContext{},
-		notifier:        notify.New(true, `printf '%s\n' "$SLK_BODY" >> `+out),
+		notifier:        notify.New(true, `printf '%s\n' "$SLK_BODY" >> "$SLK_TEST_NOTIFY_OUT"`),
 		notifyCfg:       config.Notifications{Enabled: true, OnMention: true},
 	}
 	h.OnMessage("C1", "U1", "1.001", "<!here> changed", "", "", true, false, nil, slack.Blocks{}, nil, "", "")

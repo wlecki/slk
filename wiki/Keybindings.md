@@ -10,7 +10,9 @@
 | `Enter` | Normal (message) | Open thread |
 | `i` | Normal | Enter insert mode |
 | `Esc` | Insert / Command | Return to normal mode |
-| `Enter` | Insert | Send message |
+| `:` | Normal | Command prompt (`:ws`, `:marks`, `:sp`, … — see [[Commands]]) |
+| `Enter` | Insert | Send message (`[compose] stay_in_insert_after_send = true` keeps insert mode for the next one, except after sending an attachment, which returns to normal mode while it uploads) |
+| `Ctrl+P`, `Ctrl+N`, `Ctrl+A`, … | Insert (empty composer) | With `[compose] stay_in_insert_after_send` on and no text, no attachment and no edit in progress, the app's Ctrl shortcuts leave insert mode and act as in normal mode; otherwise they edit the text as before. `Ctrl+W`, `Ctrl+H` and `Ctrl+K` always edit the text, so repeating them to delete never changes mode |
 | `Shift+Enter` | Insert | Newline |
 | `Ctrl+V` | Insert | Smart paste — image / file path / text (use `Ctrl+V`, not the terminal's `Ctrl+Shift+V`) |
 | `Ctrl+U` | Insert | Clear compose (text + pending attachments) |
@@ -62,13 +64,15 @@
 | Click | Any (on image) | Open full-screen preview |
 | `Ctrl+y` | Any | Switch theme |
 | `Alt+y` / `Alt+Shift+y` | Normal | Next / previous theme (wraps; saved per workspace) |
-| `Ctrl+s` | Any | Set status (Active / Away / DND snooze) |
-| `q` | Normal | Quit (with confirmation) |
-| `Q` | Normal | Quit immediately |
+| `Ctrl+s` | Any | Set status (Active / Away / DND snooze / Working from home / On vacation / Clear status) |
+| `q` | Normal | Close the thread pane (does nothing when none is open) |
+| `Q` | Normal | Quit (with confirmation) |
 | `Ctrl+c` | Any | Quit (with confirmation) |
 | `K` | Normal (message) | Show the selected message author's profile |
 | `e` | Profile dialog | Copy the email shown in the dialog (or click its 📋) |
 | `c` | Profile dialog | Copy the person's huddle link while they are in a huddle Slack named a channel for (or click the 📋 on the "In a huddle" row) |
 | `K` / `Esc` / `q` | Profile dialog | Close |
+
+For `:` commands and slash commands, see [[Commands]].
 
 Custom keybinding overrides are on the roadmap — see [[Tradeoffs and Non-Goals|Tradeoffs-and-Non-Goals]].

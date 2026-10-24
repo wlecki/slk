@@ -92,6 +92,7 @@ type Model struct {
 	chromeCrumbChannel string
 	chromeCrumbType    string
 	chromeAuthor       string
+	crumbChannelCols   int
 
 	// userNamesV / channelNamesV are bumped every time SetUserNames /
 	// SetChannelNames replaces the map. Used by chromeCache (and any other
@@ -1058,7 +1059,7 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 		m.chromeCrumbChannel != m.crumbChannel ||
 		m.chromeCrumbType != m.crumbType ||
 		m.chromeAuthor != author {
-		header := renderBreadcrumb(width, m.crumbChannel, m.crumbType, author, chromeReplyCount)
+		header, channelCols := renderBreadcrumb(width, m.crumbChannel, m.crumbType, author, chromeReplyCount)
 		separator := lipgloss.NewStyle().
 			Width(width).
 			Background(styles.Background).
@@ -1074,6 +1075,7 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 		m.chromeCrumbChannel = m.crumbChannel
 		m.chromeCrumbType = m.crumbType
 		m.chromeAuthor = author
+		m.crumbChannelCols = channelCols
 	}
 	chrome := m.chromeCache
 	chromeHeight := m.chromeHeight
@@ -1146,7 +1148,7 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 		// A parent without a ts cannot be clicked or text-selected.
 		parent.Plain = parentPlain
 		for _, h := range parentRendered.Hits {
-			if h.Kind == entrylist.HitImage {
+			if h.Kind == entrylist.HitImage || h.Kind == entrylist.HitFile {
 				parent.Hits = append(parent.Hits, h)
 			}
 		}
@@ -1319,6 +1321,15 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 	return fitHeight(chrome+"\n"+strings.Join(rows, "\n"), height)
 }
 
+// HitTestBreadcrumbChannel reports whether pane-local (row, col) lands on
+// the breadcrumb's channel label - the span the click router turns into
+// closing the thread and returning to the channel, the mouse equivalent
+// of the hint's esc. Row 0 is the breadcrumb row, the first row under the
+// pane's top border; the span covers the label only, not the separator.
+func (m *Model) HitTestBreadcrumbChannel(row, col int) bool {
+	return row == 0 && col >= 0 && m.crumbChannelCols > 0 && col < m.crumbChannelCols
+}
+
 // HitTestReaction returns the (reply index, reaction emoji name) at
 // (row, col) within the thread's content area, or ok=false when no
 // reaction pill covers that cell. Coordinate frame: row 0 is the first
@@ -1340,6 +1351,23 @@ func (m *Model) HitTestReaction(row, col int) (replyIdx int, emoji string, ok bo
 func (m *Model) HitTestImage(row, col int) (ts string, attIdx int, ok bool) {
 	h, ok := m.list.HitTest(entrylist.HitImage, row, col)
 	if !ok || h.Key == "" {
+		return "", 0, false
+	}
+	switch {
+	case h.Ref == parentSelected:
+		return m.parent.TS, h.Aux, m.parent.TS != ""
+	case h.Ref >= 0 && h.Ref < len(m.replies):
+		return m.replies[h.Ref].TS, h.Aux, true
+	}
+	return "", 0, false
+}
+
+// HitTestFile returns the ts of the message (the parent or a reply)
+// and the attachment index of the "[File]" line at (row, col), or
+// ok=false. Coordinate frame mirrors HitTestReaction.
+func (m *Model) HitTestFile(row, col int) (ts string, attIdx int, ok bool) {
+	h, ok := m.list.HitTest(entrylist.HitFile, row, col)
+	if !ok {
 		return "", 0, false
 	}
 	switch {

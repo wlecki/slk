@@ -91,6 +91,7 @@ Everything lives in the [**wiki**](https://github.com/gammons/slk/wiki):
 - [Setup](https://github.com/gammons/slk/wiki/Setup) — desktop-app auth, adding workspaces
 - [Features](https://github.com/gammons/slk/wiki/Features) — full feature breakdown
 - [Keybindings](https://github.com/gammons/slk/wiki/Keybindings) — every key, every mode
+- [Commands](https://github.com/gammons/slk/wiki/Commands) — `:` commands and slash commands
 - [Configuration](https://github.com/gammons/slk/wiki/Configuration) — `config.toml`, custom themes, XDG paths
 - [Terminal Compatibility](https://github.com/gammons/slk/wiki/Terminal-Compatibility) — what each terminal supports, including tmux setup (inline images, unread-title forwarding)
 - [Clipboard and OSC 52](https://github.com/gammons/slk/wiki/Clipboard-and-OSC-52) — copy/paste setup notes

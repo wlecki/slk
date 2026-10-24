@@ -607,15 +607,7 @@ func run() error {
 	for _, it := range wsItems {
 		railTeamIDs = append(railTeamIDs, it.ID)
 	}
-	applyUISettings(app, uiSettings{
-		TimestampFormat:      tsFormat,
-		TypingIndicators:     cfg.Animations.TypingIndicators,
-		StaleAfter:           time.Duration(cfg.Sidebar.HideInactiveAfterDays) * 24 * time.Hour,
-		HideDeactivatedUsers: cfg.General.HideDeactivatedUsers,
-		MouseWheelLines:      cfg.Appearance.MouseWheelLines,
-		ColoredUsernames:     cfg.Appearance.ColoredUsernames,
-		ThemeOverrides:       cfg.Theme,
-	})
+	applyUISettings(app, uiSettingsFromConfig(cfg))
 	app.SetEditorService(core.NewEditorService(editor.WriteDraft, editor.Edit, editor.TakeDraft))
 	if editor, ok := ui.ResolveEditor(cfg.Compose.Editor); ok {
 		app.SetComposeEditor(editor)
@@ -700,6 +692,14 @@ func run() error {
 	}
 	app.SetSettingsService(core.NewSettingsService(saveTheme, saveSidebarWidth))
 
+	// endOfDayUnix returns 23:59:59 local time on now's date, as a Unix
+	// timestamp, so a WFH status auto-clears at the end of the day
+	// instead of lingering indefinitely.
+	endOfDayUnix := func(now time.Time) int64 {
+		y, m, d := now.Date()
+		return time.Date(y, m, d, 23, 59, 59, 0, now.Location()).Unix()
+	}
+
 	// Wire presence/DND status setter. Resolves the active team ID
 	// through the router at invocation so the closure always targets
 	// the currently-active workspace context.
@@ -719,6 +719,12 @@ func run() error {
 				err = wctx.Client.SetUserPresence(ctx, "away")
 			case presencemenu.ActionSnooze:
 				_, err = wctx.Client.SetSnooze(ctx, snoozeMinutes)
+			case presencemenu.ActionSetWFH:
+				err = wctx.Client.SetCustomStatus(ctx, "Working from home", ":house:", endOfDayUnix(time.Now()))
+			case presencemenu.ActionSetVacation:
+				err = wctx.Client.SetCustomStatus(ctx, "On vacation", ":palm_tree:", 0)
+			case presencemenu.ActionClearStatus:
+				err = wctx.Client.SetCustomStatus(ctx, "", "", 0)
 			case presencemenu.ActionEndDND:
 				// End any active manual snooze AND any active scheduled
 				// DND session. Either may be a no-op depending on the

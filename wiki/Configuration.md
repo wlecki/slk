@@ -82,6 +82,10 @@ width = 30                      # sidebar width in columns, 20 to 60 (default 30
 
 [compose]
 editor = "nvim"   # Ctrl+E editor, used when $VISUAL and $EDITOR are unset
+# Keep typing after Enter sends (default false: return to normal mode like
+# vim). While it's on, app Ctrl shortcuts (Ctrl+P, Ctrl+N, Ctrl+A, ...) also
+# work from an empty composer; Ctrl+W, Ctrl+H and Ctrl+K keep deleting text.
+stay_in_insert_after_send = true
 
 [cache]
 message_retention_days = 30
@@ -113,9 +117,9 @@ order = 1
 
 # Channels can carry an optional ":<N>" suffix to pin their order
 # within the section. Lower numbers sort higher. Entries without a
-# suffix fall after annotated ones, in the order they appear.
+# suffix fall after annotated ones, alphabetically.
 # This syntax is only honored when use_slack_sections = false;
-# in Slack-native mode, channel order comes from Slack.
+# in Slack-native mode, channels sort alphabetically within each section.
 [sections.Engineering]
 channels = ["eng-general:1", "eng-alerts:2", "eng-*"]
 order = 2
@@ -187,11 +191,16 @@ sections of their own fall back to the global table.
 
 ### Ordering channels within a section
 
+Channels sort alphabetically within each section, regardless of unread status.
+Slack-native section order is preserved, so Starred stays where you placed it.
+Within Starred, channels stay ahead of people and apps, with each group sorted
+alphabetically.
+
 Each entry in a section's `channels` list may carry an optional `:<N>`
 suffix where `N` is a non-negative integer. Channels matched by an
 annotated pattern sort ahead of channels matched by un-annotated
 patterns; among annotated channels, lower `N` wins; un-annotated
-channels keep the order Slack returned them in.
+channels sort alphabetically.
 
 ```toml
 [sections.Engineering]
@@ -201,13 +210,13 @@ order = 2
 
 In the example above, `#eng-general` is pinned to the top of the
 Engineering section, followed by `#eng-alerts`, followed by every
-other `eng-*` channel in Slack-API order.
+other `eng-*` channel in alphabetical order.
 
 This syntax is only honored when `use_slack_sections = false` (or
 when Slack's section endpoint is unreachable and slk falls back to
-glob mode). In Slack-native mode, channel order within a section
-comes from Slack and the `:<N>` suffix is ignored along with the
-rest of the `[sections.*]` block.
+glob mode). In Slack-native mode, channels sort alphabetically within each
+section and the `:<N>` suffix is ignored along with the rest of the
+`[sections.*]` block.
 
 ### Limitations of Slack-native sections
 

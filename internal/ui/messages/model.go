@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	bubblesansi "github.com/gammons/slk/internal/bubbles/ansi"
 	"github.com/gammons/slk/internal/bubbles/entrylist"
 	"github.com/gammons/slk/internal/core"
@@ -1873,6 +1874,17 @@ func (m *Model) HitTestImage(row, col int) (ts string, attIdx int, ok bool) {
 	return m.messages[msgIdx].TS, attIdx, true
 }
 
+// HitTestFile returns the ts of the message and the attachment index
+// of the "[File]" line at (row, col), or ok=false. Coordinate frame
+// mirrors HitTest.
+func (m *Model) HitTestFile(row, col int) (ts string, attIdx int, ok bool) {
+	h, ok := m.list.HitTest(entrylist.HitFile, row, col)
+	if !ok || h.Ref < 0 || h.Ref >= len(m.messages) {
+		return "", 0, false
+	}
+	return m.messages[h.Ref].TS, h.Aux, true
+}
+
 // HitTestReaction returns the (message index, reaction emoji name) at
 // (row, col) within the messages-pane content area, or ok=false when
 // no reaction pill covers that cell. Coordinate frame mirrors HitTest.
@@ -1935,6 +1947,22 @@ func (m *Model) selectedLines(i int) []string {
 	return m.cache[i].SelectedLines(e, m.list.HasSelection(), func(src string) []string {
 		return NewWrapStyles(m.focused).SelectedVariant(src, m.cacheWidth)
 	})
+}
+
+// composeFallbackRow grafts a halfblock fallback row onto the
+// placeholder row it replaces. The placeholder carries the row's left
+// border, avatar gutter and background fill; a bare fallback row
+// would shift the image left under the gutter (one column, six with
+// an avatar), drop the border, and leave the row short so stale
+// pixels stayed visible right of the image on panes without a
+// scrollbar pass to re-pad. Keep the placeholder's first col cells,
+// then the fallback, then the placeholder's own tail: cut from the
+// row being replaced rather than re-filling from a themed spacer, so
+// the tail carries whatever background that row had - the selection
+// tint included - instead of the unselected background.
+func composeFallbackRow(placeholder, fb string, col int) string {
+	end := col + ansi.StringWidth(fb)
+	return ansi.Cut(placeholder, 0, col) + fb + ansi.Cut(placeholder, end, ansi.StringWidth(placeholder))
 }
 
 // viewInternal is the body shared by View and ViewBare. When
@@ -2126,7 +2154,7 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 					if sixelFallback == nil {
 						sixelFallback = make(map[int]string)
 					}
-					sixelFallback[row] = sx.fallback[k]
+					sixelFallback[row] = composeFallbackRow(frame.Rows[row], sx.fallback[k], sx.col)
 				}
 			}
 		}
