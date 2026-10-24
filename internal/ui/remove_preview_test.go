@@ -602,3 +602,142 @@ func TestRemovePreview_ResultOfThePendingRemovalConfirmsIt(t *testing.T) {
 		t.Error("the pending removal's own ok must confirm it")
 	}
 }
+
+// staleParentApp is a previewApp on C1 whose own message P1 shows previews
+// One and Two both in the channel pane and as the parent of the open
+// thread, the parent selected in the focused thread pane.
+func staleParentApp(t *testing.T) (*App, *[]removeCall) {
+	t.Helper()
+	both := ownMessage("P1", card(1, "One", "https://a.example"), card(2, "Two", "https://b.example"))
+	a, calls := previewApp(t, nil, both)
+	a.threadPanel.SetThread(both, []messages.MessageItem{ownMessage("R1")}, "C1", "P1")
+	a.threadVisible = true
+	focusThreadParent(t, a)
+	return a, calls
+}
+
+func focusThreadParent(t *testing.T, a *App) {
+	t.Helper()
+	a.focusedPanel = PanelThread
+	a.threadPanel.GoToTop()
+	a.threadPanel.MoveUp() // from the first reply onto the parent
+	if sel, _ := a.threadPanel.SelectedMessage(); sel.TS != "P1" {
+		t.Fatalf("selected %q, want the parent", sel.TS)
+	}
+}
+
+// reloadChannelWithoutOne is a channel reload after One was removed: Slack
+// renumbered Two into id 1. The thread's parent is not reloaded.
+func reloadChannelWithoutOne(a *App) {
+	a.messagepane.SetMessages([]messages.MessageItem{ownMessage("P1", card(1, "Two", "https://b.example"))})
+	a.messagepane.SelectByIndex(0)
+}
+
+// Greptile's order on #349: One is removed, its echo is lost, the channel is
+// reloaded but the open thread is not. Neither copy may clear the pending
+// removal or send: the stale parent would name One's old id, which is now
+// Two's.
+func TestRemovePreview_CopiesThatDisagreeAreRefused(t *testing.T) {
+	a, calls := staleParentApp(t)
+	pressKeyAll(t, a, keyPress('x'))
+	pressKeyAll(t, a, keyPress('1'))
+	if len(*calls) != 1 || (*calls)[0].id != 1 {
+		t.Fatalf("calls = %+v, want the removal of One", *calls)
+	}
+	reloadChannelWithoutOne(a)
+
+	// x on the reloaded channel copy (the user would then cancel).
+	a.focusedPanel = PanelMessages
+	pressKeyAll(t, a, keyPress('x'))
+	if a.confirmPrompt.IsVisible() {
+		pressKeyAll(t, a, keyPress('n'))
+		t.Error("x on the channel copy prompted while the thread's copy disagrees")
+	}
+	if !toastShows(a, staleCopyToast) {
+		t.Errorf("toast = %q, want the refusal", statusbarText(a))
+	}
+	if _, ok := a.previewRemovals[previewRemovalKey("C1", "P1")]; !ok {
+		t.Error("a press on disagreeing copies cleared the pending removal")
+	}
+
+	// x on the stale parent, confirmed.
+	focusThreadParent(t, a)
+	pressKeyAll(t, a, keyPress('x'))
+	if a.confirmPrompt.IsVisible() {
+		pressKeyAll(t, a, keyPress('1'))
+		t.Error("x on the stale parent prompted")
+	}
+	if len(*calls) != 1 {
+		t.Errorf("calls = %+v; the stale parent's id must not be sent", *calls)
+	}
+	if !toastShows(a, staleCopyToast) {
+		t.Errorf("toast = %q, want the refusal", statusbarText(a))
+	}
+}
+
+// The channel is reloaded while the prompt on the parent is open: the
+// confirm must look at every copy again.
+func TestRemovePreview_ConfirmAfterACopyChangedIsRefused(t *testing.T) {
+	a, calls := staleParentApp(t)
+	pressKeyAll(t, a, keyPress('x'))
+	if !dialogShows(a, "Remove which preview?") {
+		t.Fatalf("no prompt:\n%s", a.confirmPrompt.View())
+	}
+	reloadChannelWithoutOne(a)
+	pressKeyAll(t, a, keyPress('1'))
+	if len(*calls) != 0 {
+		t.Errorf("calls = %+v; nothing may be sent while the copies disagree", *calls)
+	}
+	if !toastShows(a, staleCopyToast) {
+		t.Errorf("toast = %q, want the refusal", statusbarText(a))
+	}
+	if len(a.previewRemovals) != 0 {
+		t.Errorf("previewRemovals = %+v; a refused confirm must not start one", a.previewRemovals)
+	}
+}
+
+// Copies that agree work as one, from either pane.
+func TestRemovePreview_CopiesThatAgreeSend(t *testing.T) {
+	for _, pane := range []string{"thread", "channel"} {
+		t.Run(pane, func(t *testing.T) {
+			a, calls := staleParentApp(t)
+			if pane == "channel" {
+				a.focusedPanel = PanelMessages
+			}
+			pressKeyAll(t, a, keyPress('x'))
+			pressKeyAll(t, a, keyPress('2'))
+			if toastShows(a, "This message changed") || toastShows(a, "That preview changed") {
+				t.Errorf("toast = %q on agreeing copies", statusbarText(a))
+			}
+			if len(*calls) != 1 || (*calls)[0] != (removeCall{"T1", "C1", "P1", 2}) {
+				t.Errorf("calls = %+v, want the removal of Two", *calls)
+			}
+		})
+	}
+}
+
+// Copies agree on ids and URLs in order; the title may differ.
+func TestRemovePreview_CopiesAgreeOnIDsAndURLs(t *testing.T) {
+	channel := []blocks.LegacyAttachment{card(1, "One", "https://a.example"), card(2, "Two", "https://b.example")}
+	for name, tc := range map[string]struct {
+		thread []blocks.LegacyAttachment
+		agree  bool
+	}{
+		"same":             {channel, true},
+		"retitled":         {[]blocks.LegacyAttachment{card(1, "Uno", "https://a.example"), card(2, "Two", "https://b.example")}, true},
+		"another URL":      {[]blocks.LegacyAttachment{card(1, "One", "https://a.example"), card(2, "Two", "https://c.example")}, false},
+		"renumbered":       {[]blocks.LegacyAttachment{card(2, "One", "https://a.example"), card(1, "Two", "https://b.example")}, false},
+		"one fewer":        {channel[1:], false},
+		"no thread parent": {nil, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, _ := previewApp(t, nil, ownMessage("P1", channel...))
+			if tc.thread != nil {
+				a.threadPanel.SetThread(ownMessage("P1", tc.thread...), nil, "C1", "P1")
+			}
+			if got := a.previewCopiesAgree("C1", "P1"); got != tc.agree {
+				t.Errorf("previewCopiesAgree = %v, want %v", got, tc.agree)
+			}
+		})
+	}
+}

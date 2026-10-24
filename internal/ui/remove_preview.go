@@ -15,10 +15,14 @@
 // Slack surely refused or the message shows the result; a re-check of
 // the id and its URL when the prompt is confirmed; the team the key was
 // pressed in travels with the request; and each removal's seq, so the
-// answer of one never lands on another.
+// answer of one never lands on another. A message can also be on screen
+// twice (the open thread's parent and the channel) with one copy reloaded
+// and the other not, so x and the confirm refuse while the copies disagree
+// (previewCopiesAgree).
 package ui
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -160,6 +164,54 @@ func (a *App) clearPreviewRemoval(channelID, ts string) {
 	delete(a.previewRemovals, previewRemovalKey(channelID, ts))
 }
 
+// staleCopyToast is the toast for x on a message whose copies disagree.
+const staleCopyToast = "This message changed, reload the channel and thread"
+
+// previewCopiesAgree reports whether every copy of the message the App
+// holds offers the same previews: the open thread's parent or reply, and
+// the message in each window on the channel. A channel window counts in
+// any view: a loaded copy is newer data even when Activity covers it.
+// Copies that disagree mean one is stale, and a stale id may now name
+// another preview (Slack renumbers them after a removal).
+//
+// Callers check this before previewRemovalState: the stale copy must not
+// end a removal that the fresh one still shows, nor the fresh one end it
+// while the stale one can still be confirmed.
+func (a *App) previewCopiesAgree(channelID, ts string) bool {
+	var copies []messages.MessageItem
+	if a.threadPanel.ChannelID() == channelID {
+		// The pane is cleared when the thread closes, so a loaded thread is
+		// an open one.
+		if p := a.threadPanel.ParentMsg(); p.TS == ts {
+			copies = append(copies, p)
+		}
+		for _, r := range a.threadPanel.Replies() {
+			if r.TS == ts {
+				copies = append(copies, r)
+			}
+		}
+	}
+	for _, mm := range a.modelsForChannel(channelID) {
+		for _, m := range mm.Messages() {
+			if m.TS == ts {
+				copies = append(copies, m)
+			}
+		}
+	}
+	for i := 1; i < len(copies); i++ {
+		if !slices.EqualFunc(messages.RemovablePreviews(copies[0]), messages.RemovablePreviews(copies[i]), samePreview) {
+			return false
+		}
+	}
+	return true
+}
+
+// samePreview reports whether p and q name the same preview by the same id.
+// The title is not compared: it does not change what the id removes.
+func samePreview(p, q messages.RemovablePreview) bool {
+	return p.AttachmentID == q.AttachmentID && p.URL == q.URL
+}
+
 // previewLabel is p's name for a prompt, on one line.
 func previewLabel(p messages.RemovablePreview) string {
 	return ansi.Truncate(strings.Join(strings.Fields(p.Label()), " "), previewLabelWidth, "…")
@@ -179,6 +231,9 @@ func (a *App) removePreviewOfSelected() tea.Cmd {
 	previews := messages.RemovablePreviews(msg)
 	if len(previews) == 0 {
 		return toastWithClear(a, "No link preview on this message", 3*time.Second)
+	}
+	if !a.previewCopiesAgree(ref.channelID, ref.ts) {
+		return toastWithClear(a, staleCopyToast, 3*time.Second)
 	}
 	if r, pending := a.previewRemovalState(ref.channelID, ref.ts, previews); pending {
 		return toastWithClear(a, previewRemovalToast(r), 3*time.Second)
@@ -222,6 +277,9 @@ func (a *App) removePreview(m RemovePreviewMsg) tea.Cmd {
 	previews := messages.RemovablePreviews(cur)
 	if !hasPreview(previews, m.AttachmentID, m.URL) {
 		return toastWithClear(a, "That preview changed, try again", 3*time.Second)
+	}
+	if !a.previewCopiesAgree(m.ChannelID, m.TS) {
+		return toastWithClear(a, staleCopyToast, 3*time.Second)
 	}
 	// x checked this too, but the prompt closes before its answer is
 	// reduced: a second x can open another prompt in between.

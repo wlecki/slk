@@ -243,6 +243,20 @@ Where the code differs from, or fills in, the design above:
   looks a thread parent selected in the thread pane up in that pane first
   (`ParentMsg`), then in the channel windows: the thread pane can be the
   only one holding it.
+- A message can be held twice: as the open thread's parent (or a broadcast
+  reply) and in the channel windows. One copy can be reloaded while the
+  other is not (Greptile on #349: remove A of A and B, lose the echo, reload
+  the channel; the thread still shows A with its old id, which Slack gave
+  to B). So `x` and the confirm both check `previewCopiesAgree` first: every
+  copy (the thread pane's, and every channel window's in any view, since a
+  loaded copy is newer data even when Activity covers it) must offer the
+  same previews, ids and URLs in order. If not, they toast "This message
+  changed, reload the channel and thread" and send nothing. The check runs
+  before the pending state is read, so disagreeing copies neither end a
+  removal (the lazy reload check in `previewRemovalState`) nor start one.
+  `previewRemovalState` itself does not compare copies: its only other
+  caller is the `message_changed` echo, which is newer than any copy. When
+  the copies agree, `findActionMessage` still picks the one used.
 - The chooser offers at most nine previews, one per digit key, so a prompt
   of long titles (a button row each) keeps its Cancel button on a short
   terminal. With more, its body says it shows the first nine; the rest can
