@@ -249,9 +249,10 @@ Where the code differs from, or fills in, the design above:
   the channel; the thread still shows A with its old id, which Slack gave
   to B). So `x` and the confirm both check `previewCopiesAgree` first: every
   copy (the thread pane's, and every channel window's in any view, since a
-  loaded copy is newer data even when Activity covers it) must offer the
-  same previews, ids and URLs in order. If not, they toast "This message
-  changed, reload the channel and thread" and send nothing. The check runs
+  window Activity covers can be acted on again when the view returns) must
+  offer the same previews, ids and URLs in order. If not, they toast "This
+  message changed, close and reopen the thread" (a channel reload
+  refreshes the channel windows, not the thread pane) and send nothing. The check runs
   before the pending state is read, so disagreeing copies neither end a
   removal (the lazy reload check in `previewRemovalState`) nor start one.
   `previewRemovalState` itself does not compare copies: its only other

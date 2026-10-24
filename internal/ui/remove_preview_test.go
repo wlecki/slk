@@ -616,6 +616,7 @@ func staleParentApp(t *testing.T) (*App, *[]removeCall) {
 	return a, calls
 }
 
+// focusThreadParent focuses the thread pane and selects its parent P1.
 func focusThreadParent(t *testing.T, a *App) {
 	t.Helper()
 	a.focusedPanel = PanelThread
@@ -723,17 +724,22 @@ func TestRemovePreview_CopiesAgreeOnIDsAndURLs(t *testing.T) {
 		thread []blocks.LegacyAttachment
 		agree  bool
 	}{
-		"same":             {channel, true},
-		"retitled":         {[]blocks.LegacyAttachment{card(1, "Uno", "https://a.example"), card(2, "Two", "https://b.example")}, true},
-		"another URL":      {[]blocks.LegacyAttachment{card(1, "One", "https://a.example"), card(2, "Two", "https://c.example")}, false},
-		"renumbered":       {[]blocks.LegacyAttachment{card(2, "One", "https://a.example"), card(1, "Two", "https://b.example")}, false},
-		"one fewer":        {channel[1:], false},
-		"no thread parent": {nil, true},
+		"same":                      {channel, true},
+		"retitled":                  {[]blocks.LegacyAttachment{card(1, "Uno", "https://a.example"), card(2, "Two", "https://b.example")}, true},
+		"another URL":               {[]blocks.LegacyAttachment{card(1, "One", "https://a.example"), card(2, "Two", "https://c.example")}, false},
+		"renumbered":                {[]blocks.LegacyAttachment{card(2, "One", "https://a.example"), card(1, "Two", "https://b.example")}, false},
+		"one fewer":                 {channel[1:], false},
+		"no thread parent":          {nil, true},
+		"thread of another channel": {channel[1:], true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			a, _ := previewApp(t, nil, ownMessage("P1", channel...))
 			if tc.thread != nil {
-				a.threadPanel.SetThread(ownMessage("P1", tc.thread...), nil, "C1", "P1")
+				threadChannel := "C1"
+				if name == "thread of another channel" {
+					threadChannel = "C2" // same ts, another conversation: not a copy
+				}
+				a.threadPanel.SetThread(ownMessage("P1", tc.thread...), nil, threadChannel, "P1")
 			}
 			if got := a.previewCopiesAgree("C1", "P1"); got != tc.agree {
 				t.Errorf("previewCopiesAgree = %v, want %v", got, tc.agree)

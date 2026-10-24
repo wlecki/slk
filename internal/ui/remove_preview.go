@@ -165,12 +165,16 @@ func (a *App) clearPreviewRemoval(channelID, ts string) {
 }
 
 // staleCopyToast is the toast for x on a message whose copies disagree.
-const staleCopyToast = "This message changed, reload the channel and thread"
+// The stale copy is the open thread's: a channel reload refreshes every
+// channel window but not the thread pane, so reopening the thread is what
+// fixes it.
+const staleCopyToast = "This message changed, close and reopen the thread"
 
 // previewCopiesAgree reports whether every copy of the message the App
 // holds offers the same previews: the open thread's parent or reply, and
 // the message in each window on the channel. A channel window counts in
-// any view: a loaded copy is newer data even when Activity covers it.
+// any view: it is not necessarily newer, but it can be acted on again as
+// soon as the view returns.
 // Copies that disagree mean one is stale, and a stale id may now name
 // another preview (Slack renumbers them after a removal).
 //
