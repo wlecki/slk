@@ -217,3 +217,7 @@ Where the code differs from the design above:
   mention.
 - `/open` is unaffected, as the Filtering section says, so the wiki does not
   list it among the hidden surfaces.
+- Changed by `2026-10-29-deactivated-users-in-finder-design.md`: the channel
+  finder offers a deactivated DM to a search (marked, sorted last, never for
+  forwarding), and the composer of a DM with a deactivated account is
+  disabled.
