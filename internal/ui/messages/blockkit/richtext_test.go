@@ -1,6 +1,7 @@
 package blockkit
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -479,5 +480,82 @@ func TestRichTextToMrkdwn_GitHubPendingReviewFixture(t *testing.T) {
 	// 6. Links materialised as wire form (one URL is enough).
 	if !strings.Contains(got, "<https://github.com/userevidence/musashi/pull/4726|") {
 		t.Errorf("missing link wire form in output:\n%s", got)
+	}
+}
+
+// richTextFromJSON decodes a rich_text block the way a received message's
+// blocks are decoded, so element kinds slack-go does not know arrive as
+// *slack.RichTextSectionUnknownElement with their raw JSON.
+func richTextFromJSON(t *testing.T, raw string) RichTextBlock {
+	t.Helper()
+	var rt slack.RichTextBlock
+	if err := json.Unmarshal([]byte(raw), &rt); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return RichTextBlock{Elements: rt.Elements}
+}
+
+// attachmentMentionJSON is the shape of an app's link chip (a Work
+// Object) in a rich_text block, as Slack's web client writes it when a
+// pasted link unfurls into a chip (captured from drafts.list).
+const attachmentMentionJSON = `{"type":"attachment_mention",` +
+	`"url":"https://linear.app/acme/issue/ENG-42/fix-the-thing",` +
+	`"text":"Fix the thing","app_id":"A0123456789",` +
+	`"entity_id":"W:A0123456789:lin1:issue","icon_name":"brand-linear-filled",` +
+	`"product_name":"Linear"}`
+
+func TestRichTextToMrkdwn_AttachmentMentionRendersTitle(t *testing.T) {
+	rt := richTextFromJSON(t, `{"type":"rich_text","elements":[{"type":"rich_text_section","elements":[`+
+		attachmentMentionJSON+`]}]}`)
+	want := "<https://linear.app/acme/issue/ENG-42/fix-the-thing|Fix the thing>"
+	if got := RichTextToMrkdwn(rt); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRichTextToMrkdwn_AttachmentMentionInsideText(t *testing.T) {
+	rt := richTextFromJSON(t, `{"type":"rich_text","elements":[{"type":"rich_text_section","elements":[`+
+		`{"type":"text","text":"see "},`+attachmentMentionJSON+`,{"type":"text","text":" please"}]}]}`)
+	want := "see <https://linear.app/acme/issue/ENG-42/fix-the-thing|Fix the thing> please"
+	if got := RichTextToMrkdwn(rt); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRichTextToMrkdwn_AttachmentMentionWithoutTitle(t *testing.T) {
+	rt := richTextFromJSON(t, `{"type":"rich_text","elements":[{"type":"rich_text_section","elements":[`+
+		`{"type":"attachment_mention","url":"https://example.com/x"}]}]}`)
+	want := "<https://example.com/x>"
+	if got := RichTextToMrkdwn(rt); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A title is app-supplied text inside <url|label>: a ">" in it would end
+// the link early, so it is entity-escaped like Slack's own text field.
+func TestRichTextToMrkdwn_AttachmentMentionTitleEscaped(t *testing.T) {
+	rt := richTextFromJSON(t, `{"type":"rich_text","elements":[{"type":"rich_text_section","elements":[`+
+		`{"type":"attachment_mention","url":"https://example.com/x","text":"A -> B & <C>"}]}]}`)
+	want := "<https://example.com/x|A -&gt; B &amp; &lt;C&gt;>"
+	if got := RichTextToMrkdwn(rt); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRichTextToMrkdwn_AttachmentMentionWithoutURLSkipped(t *testing.T) {
+	rt := richTextFromJSON(t, `{"type":"rich_text","elements":[{"type":"rich_text_section","elements":[`+
+		`{"type":"text","text":"a "},{"type":"attachment_mention","text":"orphan"},{"type":"text","text":" b"}]}]}`)
+	want := "a  b"
+	if got := RichTextToMrkdwn(rt); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRichTextToMrkdwn_AttachmentMentionInPreformatted(t *testing.T) {
+	rt := richTextFromJSON(t, `{"type":"rich_text","elements":[{"type":"rich_text_preformatted","elements":[`+
+		attachmentMentionJSON+`]}]}`)
+	want := "```\nhttps://linear.app/acme/issue/ENG-42/fix-the-thing\n```"
+	if got := RichTextToMrkdwn(rt); got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

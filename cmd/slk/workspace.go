@@ -79,6 +79,11 @@ type WorkspaceContext struct {
 	// us the workspace has zero unread threads, we trust that and
 	// suppress the heuristic-derived flags entirely.
 	ThreadsHasUnreads bool
+	// BadgeEvents stamps the arrival time of the workspace's last
+	// badge_counts_updated, so the reconnect catch-up can drop a
+	// client.counts snapshot that an event superseded mid-request. See
+	// badgeEventClock.
+	BadgeEvents *badgeEventClock
 	// ThreadSubsGate throttles the workspace's
 	// subscriptions.thread.getView fetches to one per
 	// threadSubsSyncInterval. Fired on workspace-ready, on Threads

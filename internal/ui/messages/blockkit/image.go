@@ -210,11 +210,8 @@ func fetchOrPlaceholder(url string, target image.Point, ctx Context, rowStart in
 	// fetch worker (Fetcher.Prerendered). Same contract as the
 	// RenderImage call below, minus the protocol encode.
 	if pr, ok := ctx.Fetcher.Prerendered(key, target, ctx.Protocol); ok {
-		var fl []func(io.Writer) error
-		if pr.OnFlush != nil {
-			fl = []func(io.Writer) error{pr.OnFlush}
-		}
-		return pr.Lines, fl, nil, hit, true
+		fl, sxl := sideChannelOutput(key, ctx.Protocol, pr.OnFlush, pr.Fallback, rowStart, target)
+		return pr.Lines, fl, sxl, hit, true
 	}
 	// Kitty slow path: the worker did not prerender (its keyed source
 	// lives under "F-"+key, see maybePrerender), so register and encode

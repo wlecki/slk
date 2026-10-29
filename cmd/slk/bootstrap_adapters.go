@@ -97,7 +97,7 @@ func (a viewAdapter) ConversationsView(ctx context.Context, channelID string) (*
 type countsAdapter struct{ c *slackclient.Client }
 
 func (a countsAdapter) Counts(_ context.Context) (bootstrap.Counts, error) {
-	unreads, threads, err := a.c.GetUnreadCounts()
+	unreads, threads, activity, err := a.c.GetUnreadCounts()
 	if err != nil {
 		// Zero value, not a partially-filled one: bootstrap treats a
 		// counts failure as non-fatal and logs it, and handing back
@@ -112,6 +112,7 @@ func (a countsAdapter) Counts(_ context.Context) (bootstrap.Counts, error) {
 			UnreadCount:  threads.UnreadCount,
 			MentionCount: threads.MentionCount,
 		},
+		ActivityTotal: activity,
 	}
 	for _, u := range unreads {
 		out.Unreads = append(out.Unreads, bootstrap.Unread{

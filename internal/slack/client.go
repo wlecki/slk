@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gammons/slk/internal/debuglog"
@@ -130,6 +131,14 @@ type Client struct {
 	// (e.g. &Client{api: mock}); BrowserTransport treats a nil Env as
 	// "send no envelope params", so those clients still work.
 	envelope *slackhttp.Envelope
+
+	// wsLive is true while the WebSocket event owner runs. A send only
+	// looks its links up for chips (link_chips.go) when it is, because
+	// the answer comes over the socket.
+	wsLive atomic.Bool
+
+	// unfurls routes unfurl_preview_updated frames to those lookups.
+	unfurls unfurlWaiters
 }
 
 // NewClient creates a new Slack client using browser cookie auth.
@@ -477,9 +486,13 @@ func (c *Client) StartWebSocket(handler EventHandler) error {
 			messages <- message
 		}
 	}()
+	c.wsLive.Store(true)
 	go func() {
 		defer close(c.wsDone)
 		defer handler.OnDisconnect()
+		// Deferred last so it runs first: before OnDisconnect, which is
+		// what reconnects, so it cannot clear the next socket's flag.
+		defer c.wsLive.Store(false)
 		pendingHandler, _ := handler.(PendingEventHandler)
 		var pending <-chan struct{}
 		if pendingHandler != nil {
@@ -490,6 +503,9 @@ func (c *Client) StartWebSocket(handler EventHandler) error {
 			case message, ok := <-messages:
 				if !ok {
 					return
+				}
+				if c.unfurls.deliver(message) {
+					continue
 				}
 				dispatchWebSocketEvent(message, handler)
 			case <-pending:
@@ -987,16 +1003,36 @@ func (c *Client) ListCustomEmoji(ctx context.Context) (map[string]string, error)
 // SendMessage posts a new message to the specified channel. Returns
 // the timestamp and the converted mrkdwn text actually sent (callers
 // use this for optimistic display so it matches what other Slack
-// clients will render).
+// clients will render). Links an app publishes a Work Object for go out
+// as chips; see link_chips.go.
 func (c *Client) SendMessage(ctx context.Context, channelID, text string) (string, string, error) {
+	ts, mr, err := c.postMessage(ctx, channelID, "", text, false)
+	if err != nil {
+		return "", "", fmt.Errorf("sending message: %w", err)
+	}
+	return ts, mr, nil
+}
+
+// postMessage is SendMessage and SendReply: chat.postMessage with the
+// text converted to mrkdwn and a rich_text block, chips first.
+func (c *Client) postMessage(ctx context.Context, channelID, threadTS, text string, broadcast bool) (string, string, error) {
 	mr, block := mrkdwn.Convert(text)
+	if ts, sentMr, sent, err := c.sendWithChips(ctx, channelID, threadTS, text, broadcast, block); sent {
+		return ts, sentMr, err
+	}
 	opts := []slack.MsgOption{slack.MsgOptionText(mr, false)}
+	if threadTS != "" {
+		opts = append(opts, slack.MsgOptionTS(threadTS))
+	}
 	if block != nil {
 		opts = append(opts, slack.MsgOptionBlocks(block))
 	}
+	if broadcast {
+		opts = append(opts, slack.MsgOptionBroadcast())
+	}
 	_, ts, err := c.api.PostMessage(channelID, opts...)
 	if err != nil {
-		return "", "", fmt.Errorf("sending message: %w", err)
+		return "", "", err
 	}
 	return ts, mr, nil
 }
@@ -1106,25 +1142,26 @@ type ThreadsAggregate struct {
 // Also returns the threads aggregate (HasUnreads / counts) for the
 // workspace; the threads block in client.counts is the only place
 // Slack tells us whether per-thread unreads exist without us having to
-// hit subscriptions.thread.* directly.
-func (c *Client) GetUnreadCounts() ([]UnreadInfo, ThreadsAggregate, error) {
+// hit subscriptions.thread.* directly. The int is the workspace's
+// total unread activity (see sumActivityV2).
+func (c *Client) GetUnreadCounts() ([]UnreadInfo, ThreadsAggregate, int, error) {
 	reqURL := c.apiBaseURL + "client.counts"
 	form := url.Values{"token": {c.token}}
 	req, err := http.NewRequest("POST", reqURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, ThreadsAggregate{}, fmt.Errorf("creating request: %w", err)
+		return nil, ThreadsAggregate{}, 0, fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := c.apiHTTPClient().Do(req)
 	if err != nil {
-		return nil, ThreadsAggregate{}, fmt.Errorf("fetching unread counts: %w", err)
+		return nil, ThreadsAggregate{}, 0, fmt.Errorf("fetching unread counts: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, ThreadsAggregate{}, fmt.Errorf("reading response: %w", err)
+		return nil, ThreadsAggregate{}, 0, fmt.Errorf("reading response: %w", err)
 	}
 
 	var result struct {
@@ -1158,14 +1195,19 @@ func (c *Client) GetUnreadCounts() ([]UnreadInfo, ThreadsAggregate, error) {
 			UnreadCount  int  `json:"unread_count"`
 			MentionCount int  `json:"mention_count"`
 		} `json:"threads"`
+		// ActivityV2 is the unread-activity rollup the desktop client
+		// shows on its Activity badge: one count per category
+		// (mentions, thread replies, reactions, DMs, invites, ...),
+		// workspace-wide. Absent for tokens the grid restricts.
+		ActivityV2 map[string]int `json:"activity_v2"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, ThreadsAggregate{}, fmt.Errorf("parsing response: %w", err)
+		return nil, ThreadsAggregate{}, 0, fmt.Errorf("parsing response: %w", err)
 	}
 
 	if !result.OK {
-		return nil, ThreadsAggregate{}, fmt.Errorf("client.counts API returned ok=false")
+		return nil, ThreadsAggregate{}, 0, fmt.Errorf("client.counts API returned ok=false")
 	}
 
 	var unreads []UnreadInfo
@@ -1204,7 +1246,23 @@ func (c *Client) GetUnreadCounts() ([]UnreadInfo, ThreadsAggregate, error) {
 		UnreadCount:  result.Threads.UnreadCount,
 		MentionCount: result.Threads.MentionCount,
 	}
-	return unreads, threads, nil
+	return unreads, threads, sumActivityV2(result.ActivityV2), nil
+}
+
+// sumActivityV2 totals an activity_v2 map - the per-category unread
+// activity counts client.counts and the badge_counts_updated event
+// both carry - into the single number the desktop client shows on its
+// Activity badge. Every category counts: the map is Slack's own
+// "these are your unread activity items" split, and the badge is its
+// sum. An absent or empty map (restricted tokens never see one) sums
+// to 0, which callers must treat as "unknown" when they care about
+// the distinction.
+func sumActivityV2(m map[string]int) int {
+	total := 0
+	for _, n := range m {
+		total += n
+	}
+	return total
 }
 
 // SendReply posts a threaded reply to the specified message. When
@@ -1214,18 +1272,7 @@ func (c *Client) GetUnreadCounts() ([]UnreadInfo, ThreadsAggregate, error) {
 // thread_broadcast subtype. Returns the timestamp and the converted
 // mrkdwn text actually sent.
 func (c *Client) SendReply(ctx context.Context, channelID, threadTS, text string, broadcast bool) (string, string, error) {
-	mr, block := mrkdwn.Convert(text)
-	opts := []slack.MsgOption{
-		slack.MsgOptionText(mr, false),
-		slack.MsgOptionTS(threadTS),
-	}
-	if block != nil {
-		opts = append(opts, slack.MsgOptionBlocks(block))
-	}
-	if broadcast {
-		opts = append(opts, slack.MsgOptionBroadcast())
-	}
-	_, ts, err := c.api.PostMessage(channelID, opts...)
+	ts, mr, err := c.postMessage(ctx, channelID, threadTS, text, broadcast)
 	if err != nil {
 		return "", "", fmt.Errorf("sending reply: %w", err)
 	}

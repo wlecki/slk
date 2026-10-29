@@ -159,3 +159,19 @@ func (h *rtmEventHandler) OnDNDChange(enabled bool, endUnix int64) {
 		DNDEndTS:   h.wsCtx.DNDEndTS,
 	})
 }
+
+// OnBadgeCountsUpdated forwards the server's Activity-badge
+// recalculation to the UI. The total is absolute, so the UI can apply
+// it without knowing what changed. The arrival is also stamped on the
+// workspace's badge event clock, so a reconnect's client.counts
+// snapshot in flight when the event landed knows it is stale and must
+// not overwrite the newer total.
+func (h *rtmEventHandler) OnBadgeCountsUpdated(activityTotal int) {
+	if h.wsCtx != nil && h.wsCtx.BadgeEvents != nil {
+		h.wsCtx.BadgeEvents.stamp()
+	}
+	if h.program == nil {
+		return
+	}
+	h.program.Send(ui.ActivityBadgeUpdatedMsg{TeamID: h.workspaceID, Total: activityTotal})
+}

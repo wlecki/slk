@@ -93,6 +93,7 @@ var reduceSend reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 		// UpsertSelfSent replaces it with our converted-mrkdwn
 		// text. See internal/ui/messages/model.go for both
 		// methods' contracts.
+		a.selfSend.EndSend(m.ChannelID)
 		if m.Message.TS == "" {
 			return nil, true
 		}
@@ -113,6 +114,7 @@ var reduceSend reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 		// The chat.postMessage HTTP call failed; roll back the
 		// optimistic placeholder so the user can see the send
 		// didn't go through. A toast surfaces the reason.
+		a.selfSend.EndSend(m.ChannelID)
 		if m.LocalTS != "" {
 			for _, mm := range a.modelsForChannel(m.ChannelID) {
 				mm.RemoveLocalSent(m.LocalTS)
@@ -438,8 +440,10 @@ func reduceNewMessage(a *App, m NewMessageMsg) tea.Cmd {
 func reduceSendMessage(a *App, m SendMessageMsg) tea.Cmd {
 	// Mark in-flight regardless of whether a sender is wired --
 	// the user's send intent is what controls WS-echo suppression
-	// for self-user messages on this channel.
-	a.selfSend.MarkInFlight(m.ChannelID)
+	// for self-user messages on this channel. BeginSend keeps that
+	// going until the answer lands, however long the send takes.
+	a.selfSend.BeginSend(m.ChannelID)
+	a.recordEmojiInText(m.Text)
 	// Instant-display: append an optimistic placeholder for the
 	// active channel immediately, before the chat.postMessage HTTP
 	// round-trip. The placeholder carries a "local:<n>" TS so the

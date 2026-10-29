@@ -66,6 +66,12 @@ type EventHandler interface {
 	OnDisconnect()
 	OnSelfPresenceChange(presence string)
 	OnDNDChange(enabled bool, endUnix int64)
+	// OnBadgeCountsUpdated is delivered when Slack pushes
+	// badge_counts_updated: the server recomputed the user's unread
+	// activity total (a mention arrived, an item was read in any
+	// client). activityTotal is the sum of the event's activity_v2
+	// map, the same number client.counts reports at boot.
+	OnBadgeCountsUpdated(activityTotal int)
 
 	// OnChannelMarked is delivered when Slack pushes a channel_marked /
 	// im_marked / group_marked / mpim_marked event (read state changed
@@ -803,6 +809,20 @@ func dispatchWebSocketEvent(data []byte, handler EventHandler) {
 			return
 		}
 		handler.OnPrefChange(evt.Name, evt.stringValue())
+
+	case "badge_counts_updated":
+		// The server's own Activity-badge recalculation: Slack pushes
+		// it whenever the unread-activity total changes (a new mention
+		// arrives, an activity item is read elsewhere). activity_v2 is
+		// the same per-category map client.counts returns, so the
+		// summed total is directly comparable with the boot value.
+		var evt struct {
+			ActivityV2 map[string]int `json:"activity_v2"`
+		}
+		if err := json.Unmarshal(data, &evt); err != nil {
+			return
+		}
+		handler.OnBadgeCountsUpdated(sumActivityV2(evt.ActivityV2))
 
 	case "hello":
 		debuglog.WS("hello: connected")

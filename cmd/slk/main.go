@@ -43,6 +43,7 @@ import (
 	"github.com/gammons/slk/internal/ui/styles"
 	"github.com/gammons/slk/internal/ui/themeswitcher"
 	"github.com/gammons/slk/internal/ui/workspace"
+	versionpkg "github.com/gammons/slk/internal/version"
 	"github.com/gammons/slk/internal/wake"
 	"golang.design/x/clipboard"
 	"golang.org/x/term"
@@ -75,7 +76,7 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--version", "-v", "version":
-			fmt.Printf("slk %s (commit %s, built %s)\n", version, commit, date)
+			fmt.Println(versionpkg.Line(version, commit, date))
 			fmt.Println("Unofficial Slack client. Not affiliated with Slack Technologies, LLC.")
 			fmt.Println("Uses Slack's internal browser protocol; may violate Slack's TOS. Use at your own risk.")
 			return
@@ -643,9 +644,13 @@ func run() error {
 	// thousands of users) wrote ~100MB of kitty graphics APC escape
 	// data to stdout at startup and produced a multi-minute hang on
 	// terminals that decode kitty graphics (kitty, ghostty).
-	app.SetAvatarService(core.NewAvatarService(func(userID string) string {
-		return lazyAvatar(router.Active(), avatarCache, userID)
-	}))
+	// show_avatars = false leaves the service unset, so messages render
+	// through the no-avatar path and no avatar fetches are started.
+	if cfg.Appearance.ShowAvatars {
+		app.SetAvatarService(core.NewAvatarService(func(userID string) string {
+			return lazyAvatar(router.Active(), avatarCache, userID)
+		}))
+	}
 
 	// Wire theme switcher: dispatch to the appropriate saver based on scope.
 	// A workspace save names its workspace instead of reading

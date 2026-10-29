@@ -249,6 +249,17 @@ type (
 	// the filtering). Dispatched by the unread-toggle key while the
 	// Activity view is focused.
 	ActivityToggleUnreadMsg struct{}
+	// ActivityBadgeUpdatedMsg carries a workspace's total unread
+	// activity - the number the sidebar's Activity badge shows. Sent
+	// once per workspace at boot (from client.counts) and again
+	// whenever the server pushes badge_counts_updated. The total is
+	// absolute; the badge never derives itself from the loaded feed
+	// page, whose unread count undercounts (the page holds only the
+	// newest items) and moves when the unread filter re-fetches.
+	ActivityBadgeUpdatedMsg struct {
+		TeamID string
+		Total  int
+	}
 	// ActivityReadSetMsg reports the result of asking Slack to mark one
 	// Activity item read (Read=true) or unread. The App changed the
 	// item before asking; a non-nil Err makes it undo that change.

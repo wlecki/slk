@@ -117,9 +117,6 @@ type ReanchorPolicy struct {
 	// BottomUsesNewHeight measures "was at the bottom" with this frame's
 	// height instead of the previous frame's.
 	BottomUsesNewHeight bool
-	// AnchorRefsOnly anchors only on entries with Ref >= 0. A first
-	// visible line above the first such entry keeps the raw offset.
-	AnchorRefsOnly bool
 }
 
 // Option configures a Model.
@@ -302,14 +299,14 @@ func (m *Model) SetHeight(h, sel int) {
 func (m *Model) SetEntries(es []Entry, width int, keepPosition bool) {
 	reanchor := keepPosition && m.width != width
 	var bottom, anchored bool
-	var ord, within int
+	var anchor, within int
 	if reanchor {
 		h := m.prevHeight
 		if m.reanchor.BottomUsesNewHeight {
 			h = m.height
 		}
 		bottom = m.total > 0 && m.yOffset+h >= m.total
-		ord, within, anchored = m.lineAnchor(m.yOffset)
+		anchor, within, anchored = m.lineAnchor(m.yOffset)
 	}
 	m.entries, m.width, m.live = es, width, -1
 	m.recompute()
@@ -322,12 +319,10 @@ func (m *Model) SetEntries(es []Entry, width int, keepPosition bool) {
 	switch {
 	case bottom:
 		m.setY(m.total)
-	case anchored:
-		if i, ok := m.nthAnchor(ord); ok {
-			h := len(m.entries[i].Lines)
-			within = max(min(within, h-1), 0)
-			m.setY(m.offsets[i] + within)
-		}
+	case anchored && anchor < len(m.entries):
+		h := len(m.entries[anchor].Lines)
+		within = max(min(within, h-1), 0)
+		m.setY(m.offsets[anchor] + within)
 	}
 }
 
@@ -454,37 +449,18 @@ func (m *Model) recomputeOffsets() {
 	m.total = off
 }
 
-// lineAnchor maps an absolute line to the anchor candidate covering it:
-// its ordinal among candidates and the line's offset from its start.
-func (m *Model) lineAnchor(line int) (ord, within int, ok bool) {
-	best, n := -1, 0
+// lineAnchor maps an absolute line to the index of the entry covering it
+// and the line's offset from that entry's start.
+func (m *Model) lineAnchor(line int) (i, within int, ok bool) {
+	best := -1
 	for i := range m.entries {
-		if m.reanchor.AnchorRefsOnly && m.entries[i].Ref < 0 {
-			continue
-		}
 		if m.offsets[i] > line {
 			break
 		}
-		best, ord = i, n
-		n++
+		best = i
 	}
 	if best < 0 {
 		return 0, 0, false
 	}
-	return ord, line - m.offsets[best], true
-}
-
-// nthAnchor returns the index of the ord-th anchor candidate.
-func (m *Model) nthAnchor(ord int) (int, bool) {
-	n := 0
-	for i := range m.entries {
-		if m.reanchor.AnchorRefsOnly && m.entries[i].Ref < 0 {
-			continue
-		}
-		if n == ord {
-			return i, true
-		}
-		n++
-	}
-	return 0, false
+	return best, line - m.offsets[best], true
 }

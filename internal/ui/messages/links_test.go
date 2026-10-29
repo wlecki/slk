@@ -43,6 +43,11 @@ func TestExtractLinks(t *testing.T) {
 			want: []Link{{URL: "https://a.example/1"}},
 		},
 		{
+			name: "escaped label decoded",
+			text: "<https://example.com/x|A -&gt; B &amp; &lt;C&gt;>",
+			want: []Link{{URL: "https://example.com/x", Label: "A -> B & <C>"}},
+		},
+		{
 			name: "mailto",
 			text: "<mailto:foo@example.com|foo@example.com>",
 			want: []Link{{URL: "mailto:foo@example.com", Label: "foo@example.com"}},

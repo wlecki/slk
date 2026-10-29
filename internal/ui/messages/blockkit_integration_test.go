@@ -1,6 +1,7 @@
 package messages
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -401,5 +402,60 @@ func TestEphemeralButtonsHintSaysPressB(t *testing.T) {
 	msg.Ephemeral = false
 	if plain := renderedFor(t, msg, 100); !strings.Contains(plain, "↗ open in Slack to interact") {
 		t.Errorf("a non-ephemeral keeps the Slack hint: %q", plain)
+	}
+}
+
+// TestRenderMessage_AttachmentMentionShowsTitle: a link Slack's web client
+// sent as an app chip (a rich_text attachment_mention, e.g. a Linear
+// issue) shows the chip's title in place of the URL, the way the official
+// client does, and `o` still offers the URL with the title as its label.
+func TestRenderMessage_AttachmentMentionShowsTitle(t *testing.T) {
+	const url = "https://linear.app/acme/issue/ENG-42/fix-the-thing"
+	var blocks slack.Blocks
+	raw := `[{"type":"rich_text","block_id":"b1","elements":[{"type":"rich_text_section","elements":[` +
+		`{"type":"text","text":"see "},` +
+		`{"type":"attachment_mention","url":"` + url + `","text":"Fix the thing","app_id":"A0123456789","product_name":"Linear"}` +
+		`]}]}]`
+	if err := json.Unmarshal([]byte(raw), &blocks); err != nil {
+		t.Fatalf("unmarshal blocks: %v", err)
+	}
+	msg := MessageItem{
+		TS:        "1700000000.000100",
+		UserName:  "grant",
+		UserID:    "U1",
+		Timestamp: "10:00 AM",
+		Text:      "see <" + url + ">",
+		Blocks:    blockkit.Parse(blocks),
+	}
+	got := renderedFor(t, msg, 100)
+	if !strings.Contains(got, "see Fix the thing") {
+		t.Errorf("rendered body should show the chip title; got:\n%s", got)
+	}
+	if strings.Contains(got, "linear.app") {
+		t.Errorf("rendered body should not show the raw URL; got:\n%s", got)
+	}
+	links := MessageLinks(msg)
+	if len(links) == 0 || links[0].URL != url || links[0].Label != "Fix the thing" {
+		t.Errorf("MessageLinks = %+v, want first link %q labelled %q", links, url, "Fix the thing")
+	}
+}
+
+// TestMessageLinks_AttachmentMentionTitleUnescaped: the chip title is
+// entity-escaped inside <url|title>; the link picker shows it decoded,
+// the same as the pane does.
+func TestMessageLinks_AttachmentMentionTitleUnescaped(t *testing.T) {
+	var blocks slack.Blocks
+	raw := `[{"type":"rich_text","block_id":"b1","elements":[{"type":"rich_text_section","elements":[` +
+		`{"type":"attachment_mention","url":"https://example.com/x","text":"A -> B & <C>"}]}]}]`
+	if err := json.Unmarshal([]byte(raw), &blocks); err != nil {
+		t.Fatalf("unmarshal blocks: %v", err)
+	}
+	msg := MessageItem{TS: "1700000000.000100", Text: "<https://example.com/x>", Blocks: blockkit.Parse(blocks)}
+	links := MessageLinks(msg)
+	if len(links) != 1 || links[0].Label != "A -> B & <C>" {
+		t.Errorf("MessageLinks = %+v, want one link labelled %q", links, "A -> B & <C>")
+	}
+	if got := renderedFor(t, msg, 100); !strings.Contains(got, "A -> B & <C>") {
+		t.Errorf("rendered body should show the decoded title; got:\n%s", got)
 	}
 }

@@ -1035,9 +1035,8 @@ func TestScrollAnchorBottomPreservedAcrossWidthResize(t *testing.T) {
 
 // TestScrollAnchorAtTopOfThreadPreservedAcrossWidthResize asserts the
 // YOffset==0 boundary specifically: it stays 0 (there is nowhere lower to
-// clamp to). This does NOT exercise the general "scrolled inside the parent
-// prefix" case -- see TestScrollAnchorInsideParentPrefixNotPreservedAcrossWidthResize
-// for that, and gammons/slk#254 for why it isn't fixed yet.
+// clamp to). The general "scrolled inside the parent" case is
+// TestScrollAnchorInsideParentPreservedAcrossWidthResize.
 func TestScrollAnchorAtTopOfThreadPreservedAcrossWidthResize(t *testing.T) {
 	parent := messages.MessageItem{TS: "100.0", UserName: "alice", Text: "the parent message"}
 	m := New()
@@ -1052,15 +1051,11 @@ func TestScrollAnchorAtTopOfThreadPreservedAcrossWidthResize(t *testing.T) {
 	}
 }
 
-// TestScrollAnchorInsideParentPrefixNotPreservedAcrossWidthResize pins the
-// CURRENT, known-limited behavior (gammons/slk#254): the thread's
-// entrylist.ReanchorPolicy (AnchorRefsOnly) finds no reply entry to anchor
-// on for a line inside the parent-message prefix, so the pre-resize
-// YOffset carries through unchanged into the rewrapped content -- landing on
-// whatever reply now falls at that stale line number. This documents the
-// gap rather than asserting the desired behavior; flip it to assert
-// preservation once #254 is fixed.
-func TestScrollAnchorInsideParentPrefixNotPreservedAcrossWidthResize(t *testing.T) {
+// TestScrollAnchorInsideParentPreservedAcrossWidthResize is #254: a
+// viewport scrolled inside a long parent message stays inside the parent
+// when a wider pane rewraps it to far fewer lines, instead of carrying the
+// stale offset into the reply list.
+func TestScrollAnchorInsideParentPreservedAcrossWidthResize(t *testing.T) {
 	parent := messages.MessageItem{TS: "100.0", UserName: "alice", Text: strings.Repeat("word ", 300)}
 	m := New()
 	m.SetThread(parent, markedReplies(40), "C1", "100.0")
@@ -1071,24 +1066,15 @@ func TestScrollAnchorInsideParentPrefixNotPreservedAcrossWidthResize(t *testing.
 	if threadMarkRE.MatchString(before) {
 		t.Fatalf("test setup: viewport should be inside the parent, not a reply:\n%s", before)
 	}
-
 	raw := m.list.YOffset()
 
-	after := m.View(20, 200) // widen: parent shrinks to far fewer lines
-	if !threadMarkRE.MatchString(after) {
-		t.Fatalf("expected the known limitation (jump into a reply) to still reproduce; if this now fails, #254 was fixed -- replace this test with a real preservation assertion")
+	_ = m.View(20, 200) // widen: parent shrinks to far fewer lines
+	parentLines := len(m.list.Entries()[0].Lines)
+	if raw < parentLines {
+		t.Fatalf("test setup: raw offset %d is still inside the %d-line widened parent, so it cannot tell anchoring from keeping the raw offset", raw, parentLines)
 	}
-
-	// AnchorRefsOnly finds no anchor in the parent prefix, so the raw
-	// pre-resize offset carries through, bounded only by the new extent.
-	// Anchoring on the parent instead would clamp the offset to the
-	// rewrapped parent's last row, far above raw.
-	want := min(raw, max(0, m.list.Total()-m.list.Height()))
-	if parentLines := len(m.list.Entries()[0].Lines); want < parentLines {
-		t.Fatalf("test setup: expected offset %d is still inside the %d-line parent, so the anchor policies cannot differ", want, parentLines)
-	}
-	if got := m.list.YOffset(); got != want {
-		t.Errorf("YOffset after widening = %d, want the raw pre-resize offset %d bounded by the new extent (%d); #254 pin", got, raw, want)
+	if got := m.list.YOffset(); got >= parentLines {
+		t.Errorf("YOffset after widening = %d, want it inside the %d-line parent", got, parentLines)
 	}
 }
 

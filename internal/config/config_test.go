@@ -1084,3 +1084,29 @@ func TestHideDeactivatedUsersPartialGeneralBlockKeepsDefault(t *testing.T) {
 		t.Fatal("a [general] block without hide_deactivated_users turned the option off")
 	}
 }
+
+func TestConfig_ShowAvatars(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Appearance.ShowAvatars {
+		t.Error("expected show_avatars on by default")
+	}
+
+	if err := os.WriteFile(path, []byte("[appearance]\nshow_avatars = false\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Appearance.ShowAvatars {
+		t.Error("expected show_avatars = false to turn avatars off")
+	}
+}

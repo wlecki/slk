@@ -114,6 +114,7 @@ See [[Terminal Compatibility|Terminal-Compatibility]] for which protocol your te
 - Deactivated people are hidden like in the Slack desktop client: their DMs leave the sidebar and they are not offered in the channel finder, the new-message picker or `@` / `#` autocomplete, while old messages still show them as authors. Turn it off with `[general] hide_deactivated_users = false`; see [Configuration › Deactivated users](Configuration.md#deactivated-users).
 - Fuzzy channel finder (`Ctrl+t` / `Ctrl+p`) — auto-expands a collapsed section when you open a channel inside it; ranks 1:1 DMs above group DMs when searching by person name
 - Workspace picker (`:ws`) and direct jump (`1`–`9`)
+- `:` command line with Tab completion (`Shift+Tab` goes back) and the matching names listed in the status bar; `:help` (same as `?`) lists every key and command, `:version` shows the running build
 - All workspaces stay connected in parallel for live unread badges
 
 ## Marks & Navigation

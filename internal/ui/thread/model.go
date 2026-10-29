@@ -144,9 +144,9 @@ func New() *Model {
 
 // newThreadList configures the substrate for the thread pane (spec §5):
 // the offset clamps eagerly, as bubbles/viewport did (U6); every drag
-// step bumps Version (U4); a width change anchors only on replies, so a
-// first visible line inside the parent keeps its raw offset (#254) and
-// "at the bottom" is measured with the previous frame's height (U5). The
+// step bumps Version (U4); a width change anchors on the entry under the
+// first visible line, the parent included (#254), and "at the bottom" is
+// measured with the previous frame's height (U5). The
 // cursor does not follow the scroll (U1), a shrinking pane is not pinned
 // (U2) and a press on a separator anchors nothing (8c): the defaults.
 func newThreadList() *entrylist.Model {
@@ -154,7 +154,6 @@ func newThreadList() *entrylist.Model {
 		entrylist.WithStyles(messages.ThemeListStyles()),
 		entrylist.WithEagerClamp(),
 		entrylist.WithDirtyOnDrag(),
-		entrylist.WithReanchor(entrylist.ReanchorPolicy{AnchorRefsOnly: true}),
 	)
 }
 
@@ -1064,7 +1063,7 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 			Width(width).
 			Background(styles.Background).
 			Foreground(styles.Border).
-			Render(strings.Repeat("-", width))
+			Render(strings.Repeat("─", width))
 		m.chromeCache = header + "\n" + separator
 		m.chromeHeight = lipgloss.Height(m.chromeCache)
 		m.chromeCacheValid = true

@@ -36,7 +36,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/gammons/slk/internal/ui/help"
 	"github.com/gammons/slk/internal/ui/themeswitcher"
 )
 
@@ -100,19 +99,7 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 		// user can see it, not in a channel compose hidden behind
 		// the thread.
 		toThread := a.focusedPanel == PanelThread || (a.view == ViewThreads && a.threadVisible) || a.threadDrawnAlone()
-		// composeDisabled reflects the active CHANNEL's send capability,
-		// not the thread panel's -- a thread reply targets whatever
-		// thread is open, which need not be in that channel.
-		if a.composeDisabled && !toThread {
-			return toastWithClear(a, a.composeBlockedText(), 2*time.Second)
-		}
-		a.SetMode(ModeInsert)
-		if toThread {
-			a.focusedPanel = PanelThread
-			return a.threadCompose.Focus()
-		}
-		a.focusedPanel = PanelMessages
-		return a.compose.Focus()
+		return a.beginInsertMode(toThread)
 
 	case key.Matches(msg, a.keys.CommandMode):
 		a.enterCommandMode()
@@ -273,9 +260,7 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 		return a.scrollFocusedPanel(a.halfPageSize())
 
 	case key.Matches(msg, a.keys.Help):
-		a.help.SetEntries(help.FromKeyMap(a.keys))
-		a.help.Open()
-		a.SetMode(ModeHelp)
+		a.openHelpOverlay()
 
 	case key.Matches(msg, a.keys.ThemeSwitcher):
 		// Per-workspace scope. Header text shows the current

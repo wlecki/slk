@@ -316,7 +316,8 @@ var reduceThreads reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 		return func() tea.Msg { return threads.ListFetch(team) }, true
 
 	case SendThreadReplyMsg:
-		a.selfSend.MarkInFlight(m.ChannelID)
+		a.selfSend.BeginSend(m.ChannelID)
+		a.recordEmojiInText(m.Text)
 		// Instant-display: append an optimistic placeholder to the
 		// thread panel immediately, before the chat.postMessage HTTP
 		// round-trip. Mirrors the SendMessageMsg path; see there for
@@ -384,6 +385,7 @@ var reduceThreads reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 		// so we cannot rely on the WS echo alone -- the HTTP response
 		// must apply all the side effects (parent reply count, threads
 		// dirty) here.
+		a.selfSend.EndSend(m.ChannelID)
 		if m.Message.TS == "" {
 			return nil, true
 		}
@@ -425,6 +427,7 @@ var reduceThreads reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 		// the optimistic placeholder. Mirrors MessageSendFailedMsg.
 		// For broadcasts, also roll back the thread_broadcast row
 		// optimistically added to the channel feed.
+		a.selfSend.EndSend(m.ChannelID)
 		if a.threadVisible && m.ThreadTS == a.threadPanel.ThreadTS() && m.ChannelID == a.threadPanel.ChannelID() && m.LocalTS != "" {
 			a.threadPanel.RemoveLocalSentReply(m.LocalTS)
 		}

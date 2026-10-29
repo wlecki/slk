@@ -160,6 +160,12 @@ type App struct {
 	// every other mode.
 	cmdline string
 
+	// cmdComplete is the Tab-completion cycle in progress at that same
+	// prompt. Owned by mode_command.go; zero outside a Tab cycle — every
+	// plain edit to cmdline and every path that clears it resets this,
+	// so it can never outlive the command line it was built from.
+	cmdComplete cmdCompletion
+
 	// wins is the vim-style window tree subdividing the messages
 	// region; focusedWin is the active window within it. Phase 2:
 	// the focused window renders the single live messages model,
@@ -293,6 +299,15 @@ type App struct {
 	// only.
 	activityReads map[string]*activityRead
 
+	// activityBadgeTotals holds each workspace's total unread activity
+	// (from client.counts at boot and badge_counts_updated events
+	// after), keyed by team id. The sidebar's Activity badge shows the
+	// active workspace's value; it is never derived from the loaded
+	// feed page, whose unread count undercounts and moves when the
+	// unread filter re-fetches. A workspace with no entry (a
+	// grid-restricted member, whose counts call fails) shows zero.
+	activityBadgeTotals map[string]int
+
 	threadsDirtyDebounce time.Duration
 
 	// threadsListFetchScheduled is set while a threads-list refresh is
@@ -413,6 +428,10 @@ type App struct {
 	emojiCustoms map[string]string
 	channelNames map[string]string
 	userGroups   map[string]string
+
+	// buildInfo is the build identity :version shows: version and short
+	// commit (version.Short). Set once at startup by main.
+	buildInfo string
 
 	// externalUsers tracks which user IDs are Slack Connect / shared-channel
 	// guests. Populated by main.go via SetExternalUsers as users are
@@ -1342,7 +1361,7 @@ func (a *App) openReactionPicker(p contentPane, channelID string) tea.Cmd {
 		}
 	}
 	p.ExitReactionNav()
-	a.reactionPicker.SetFrecentEmoji(a.reactions.LoadFrecent(10))
+	a.refreshEmojiFrecency()
 	a.reactionPicker.Open(channelID, msg.TS, existing)
 	a.SetMode(ModeReactionPicker)
 	return nil
@@ -1454,6 +1473,9 @@ func (a *App) toggleReactionOnMessageItem(channelIDStr string, msg messages.Mess
 			remove = true
 			break
 		}
+	}
+	if !remove {
+		a.recordEmojiUse(emojiName)
 	}
 	a.updateReactionOnMessage(channelIDStr, msg.TS, emojiName, a.currentUserID, remove)
 	channelID := ids.ChannelID(channelIDStr)
@@ -2198,8 +2220,7 @@ func (a *App) SetMode(mode Mode) {
 	// empty outside ModeCommand" invariant true; idempotent with
 	// exitCommandMode, which clears before calling here.
 	if a.mode == ModeCommand && mode != ModeCommand {
-		a.cmdline = ""
-		a.statusbar.SetCommandLine("")
+		a.clearCmdline()
 	}
 	// Same for the marks list: a global intercept (ctrl+c) leaves
 	// ModeMarks without going through handleMarksMode, and the list
@@ -3326,6 +3347,7 @@ func (a *App) SetReactionService(r core.ReactionService) {
 		r = noopReactionService
 	}
 	a.reactions = r
+	a.refreshEmojiFrecency()
 }
 
 // SetInteractionService wires the service the action dialog presses
@@ -3479,6 +3501,11 @@ func (a *App) SetHelpFooter(s string) {
 	a.help.SetFooter(s)
 }
 
+// SetBuildInfo sets the build identity :version shows.
+func (a *App) SetBuildInfo(s string) {
+	a.buildInfo = s
+}
+
 // SetMouseWheelLines configures the number of lines the viewport scrolls per
 // mouse-wheel notch. Values < 1 are coerced to 1 to guarantee scroll progress.
 func (a *App) SetMouseWheelLines(n int) {
@@ -3525,6 +3552,13 @@ func (a *App) renderTypingLine() string {
 }
 
 func (a *App) View() tea.View {
+	// Compose regions are recorded per frame by the pane renderers;
+	// clear last frame's before any pane decides not to draw one (the
+	// threads view replaces the channel pane's compose). First
+	// statement so the early-fallback path cannot leave a stale
+	// region behind either.
+	a.layout.ResetComposeRegions()
+
 	if v, handled := a.renderEarlyFallback(); handled {
 		return a.finalizeSixelView(v, nil)
 	}
@@ -3846,6 +3880,7 @@ func (a *App) submitWithAttachments(c *compose.Model) tea.Cmd {
 	}
 
 	c.SetUploading(true)
+	a.recordEmojiInText(caption)
 	cmds := []tea.Cmd{
 		teaCmd(a.files.Upload(channelID, threadTS, caption, attachments)),
 		toastWithClear(a, fmt.Sprintf("Uploading 0/%d…", len(attachments)), 30*time.Second),
@@ -3946,28 +3981,32 @@ func (a *App) tryAttachFromClipboard(target *compose.Model, pathCandidate string
 // in the focused pane. Returns a no-op + status toast if not owned;
 // returns nil if no message is selected.
 func (a *App) beginEditOfSelected() tea.Cmd {
-	channelID, ts, text, userID, panel, ok := a.selectedMessageContext()
+	p, channelID, focused := a.focusedContentPane()
+	if !focused {
+		return nil
+	}
+	msg, ok := p.SelectedMessage()
 	if !ok {
 		return nil
 	}
-	// Build a synthetic MessageItem just for the ownership check;
-	// avoids fetching the full struct twice.
-	if !a.isOwnMessage(messages.MessageItem{UserID: userID}) {
+	if !a.isOwnMessage(msg) {
 		return func() tea.Msg { return statusbar.EditNotOwnMsg{} }
 	}
+	ts, panel := msg.TS, a.focusedPanel
 	if channelID == "" || ts == "" {
 		return nil
 	}
 
+	text := messages.EditSource(msg)
 	var stashed string
 	switch panel {
 	case PanelMessages:
 		stashed = a.compose.Value()
-		a.compose.SetValue(text)
+		a.compose.SetValue(a.compose.MentionsForEdit(text))
 		a.compose.SetPlaceholderOverride("Editing message — Enter to save, Esc to cancel")
 	case PanelThread:
 		stashed = a.threadCompose.Value()
-		a.threadCompose.SetValue(text)
+		a.threadCompose.SetValue(a.threadCompose.MentionsForEdit(text))
 		a.threadCompose.SetPlaceholderOverride("Editing message — Enter to save, Esc to cancel")
 	}
 

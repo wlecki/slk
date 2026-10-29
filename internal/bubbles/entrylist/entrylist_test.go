@@ -224,24 +224,18 @@ func TestReanchorBottomUsesOldOrNewHeight(t *testing.T) {
 	}
 }
 
-func TestReanchorRefsOnlySkipsLeadingNonRefEntries(t *testing.T) {
+func TestReanchorAnchorsOnLeadingNonRefEntry(t *testing.T) {
 	// y=3 is the last row of a 4-row parent (Ref -1) that rewraps to 2
 	// rows. Anchoring on the parent clamps the row within it to 1, so the
-	// window moves to y=1. With AnchorRefsOnly no entry covers the line,
-	// and the raw offset is kept.
-	for _, refsOnly := range []bool{false, true} {
-		m := New(WithReanchor(ReanchorPolicy{AnchorRefsOnly: refsOnly}))
-		m.SetHeight(3, 0)
-		m.SetEntries([]Entry{msg("p", -1, 4, 0), msg("a", 0, 4, 0), msg("b", 1, 4, 0)}, 20, false)
-		m.SetYOffset(3)
-		m.SetEntries([]Entry{msg("p", -1, 2, 0), msg("a", 0, 4, 0), msg("b", 1, 4, 0)}, 15, true)
-		want := 1
-		if refsOnly {
-			want = 3
-		}
-		if m.YOffset() != want {
-			t.Errorf("AnchorRefsOnly=%v: y=%d, want %d", refsOnly, m.YOffset(), want)
-		}
+	// window moves to y=1 rather than keeping the raw offset, which would
+	// now point into reply "a" (#254).
+	m := New()
+	m.SetHeight(3, 0)
+	m.SetEntries([]Entry{msg("p", -1, 4, 0), msg("a", 0, 4, 0), msg("b", 1, 4, 0)}, 20, false)
+	m.SetYOffset(3)
+	m.SetEntries([]Entry{msg("p", -1, 2, 0), msg("a", 0, 4, 0), msg("b", 1, 4, 0)}, 15, true)
+	if m.YOffset() != 1 {
+		t.Errorf("y=%d, want 1", m.YOffset())
 	}
 }
 

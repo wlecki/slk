@@ -81,18 +81,10 @@ func TestLinkPickerModeKeys(t *testing.T) {
 				if msg.URL != "https://a.example/1" {
 					t.Errorf("URL = %q, want %q", msg.URL, "https://a.example/1")
 				}
-				// BUG?: the "links" arm never clears pickerKind, while
-				// the "files" arm clears both pickerKind and
-				// pickerFiles. The stale "links" is harmless today
-				// because the next open always reassigns it, but the
-				// asymmetry is unexplained. Filed as
-				// https://github.com/gammons/slk/issues/194.
-				//
-				// WHEN THAT BUG IS FIXED: the links arm clears too, so
-				// flip this to want "" (and consider extending it to
-				// a.pickerFiles == nil, which the arm also leaves).
-				if a.pickerKind != "links" {
-					t.Errorf("pickerKind = %q; the links arm is expected to leave it set", a.pickerKind)
+				// The links arm clears the picker state like the files
+				// and esc arms do (#194).
+				if a.pickerKind != "" || a.pickerFiles != nil {
+					t.Errorf("pickerKind = %q, pickerFiles = %v; want both cleared", a.pickerKind, a.pickerFiles)
 				}
 			},
 		},

@@ -3,6 +3,7 @@ package statusbar
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,8 +39,13 @@ type Model struct {
 	syncing     bool      // true while a background cache-verify fetch is in flight
 	helpHint    string    // muted text rendered in the gap area; empty disables
 	commandLine string    // "" == inactive; otherwise the :prompt shown in place of channel/workspace
-	search      string    // search segment ("/query  3/17" indicator / live prompt); "" hides
-	version     int64
+	// commandCandidates is the :prompt's Tab-completion list (vim's
+	// wildmenu), never non-empty while commandLine is ""; the name at
+	// commandCandidateIdx is the one the prompt currently holds.
+	commandCandidates   []string
+	commandCandidateIdx int
+	search              string // search segment ("/query  3/17" indicator / live prompt); "" hides
+	version             int64
 }
 
 // Version returns a counter that increments any time the View() output could
@@ -193,10 +199,34 @@ func (m *Model) SetHelpHint(s string) {
 // while non-empty. Pass "" to restore the normal segments. The caller
 // owns the ':' prefix; View appends a block-cursor glyph.
 func (m *Model) SetCommandLine(s string) {
-	if m.commandLine != s {
+	changed := m.commandLine != s
+	// The candidate list belongs to the prompt that produced it, so
+	// clearing the prompt drops it in the same step; it can never outlive
+	// the line it was matched against.
+	if s == "" && (m.commandCandidates != nil || m.commandCandidateIdx != 0) {
+		m.commandCandidates = nil
+		m.commandCandidateIdx = 0
+		changed = true
+	}
+	if changed {
 		m.commandLine = s
 		m.dirty()
 	}
+}
+
+// SetCommandCandidates sets the completion list shown next to the active
+// :prompt (vim's wildmenu), with the name the prompt currently holds at
+// idx. Pass nil to hide it. The slice is copied, so the caller keeps
+// ownership of its own; the version bumps only when the names or idx
+// change, so setting the same list and cursor again does not re-render the
+// bar.
+func (m *Model) SetCommandCandidates(names []string, idx int) {
+	if slices.Equal(m.commandCandidates, names) && m.commandCandidateIdx == idx {
+		return
+	}
+	m.commandCandidates = slices.Clone(names)
+	m.commandCandidateIdx = idx
+	m.dirty()
 }
 
 // SetToast displays an arbitrary string in the right-side toast slot. Pass ""
@@ -312,16 +342,6 @@ func (m Model) View(width int) string {
 			lipgloss.NewStyle().Foreground(styles.Error).Background(styles.SurfaceDark).Render("● Disconnected"))
 	}
 
-	// The :command prompt owns the left side while active (the
-	// channel/workspace/search segments return when it clears).
-	var left string
-	if m.commandLine != "" {
-		cmdInfo := styles.StatusBar.Render(fmt.Sprintf(" %s▌ ", m.commandLine))
-		left = lipgloss.JoinHorizontal(lipgloss.Center, modeLabel, cmdInfo)
-	} else {
-		left = lipgloss.JoinHorizontal(lipgloss.Center, modeLabel, channelInfo, wsInfo, searchInfo)
-	}
-
 	// Render separators and trailing padding with the SurfaceDark background so
 	// the right-side pills read as one continuous bar even when the terminal's
 	// default background differs from the theme's surface_dark color (e.g. a
@@ -337,6 +357,31 @@ func (m Model) View(width int) string {
 	// content rows above). Without this gap, the connection indicator
 	// overhangs visually past the compose box.
 	const rightGutter = 1
+
+	// The :command prompt owns the left side while active (the
+	// channel/workspace/search segments return when it clears). Its
+	// Tab-completion list follows the prompt -- vim's wildmenu -- and is
+	// budgeted the room the prompt leaves before the right-side pills, so
+	// it can never push the bar past width. The custom-status segment
+	// isn't counted: it is sized below from whatever the list leaves, so
+	// a long status can't hide the list the user is cycling through.
+	var left string
+	// leftGap is the column the status segment's budget keeps free after
+	// the completion list (pillGap); 0 outside the prompt.
+	leftGap := 0
+	if m.commandLine != "" {
+		cmdInfo := styles.StatusBar.Render(fmt.Sprintf(" %s▌ ", m.commandLine))
+		// pillGap keeps one column between the list and the right-side
+		// pills, so a list that fills its room doesn't run into them.
+		const pillGap = 1
+		room := width - rightGutter - pillGap - lipgloss.Width(modeLabel) -
+			lipgloss.Width(cmdInfo) - lipgloss.Width(joinRightParts(rightParts, sep)+trailing)
+		left = lipgloss.JoinHorizontal(lipgloss.Center, modeLabel, cmdInfo,
+			m.commandCandidatesView(room))
+		leftGap = pillGap
+	} else {
+		left = lipgloss.JoinHorizontal(lipgloss.Center, modeLabel, channelInfo, wsInfo, searchInfo)
+	}
 
 	// Size the custom-status segment to whatever room is left after
 	// every other segment. Slack allows up to 100 characters of status
@@ -356,7 +401,7 @@ func (m Model) View(width int) string {
 		if len(rightParts) > 0 {
 			extraSep = 1
 		}
-		budget := width - rightGutter - lipgloss.Width(left) - otherWidth - lipgloss.Width(trailing) - extraSep*lipgloss.Width(sep)
+		budget := width - rightGutter - leftGap - lipgloss.Width(left) - otherWidth - lipgloss.Width(trailing) - extraSep*lipgloss.Width(sep)
 		if seg := fitStatusSegment(m.statusEmoji, m.statusText, budget); seg != "" {
 			rightParts = append(rightParts[:statusInsertIdx:statusInsertIdx],
 				append([]string{seg}, rightParts[statusInsertIdx:]...)...)
@@ -399,6 +444,102 @@ func (m Model) View(width int) string {
 	rightPad := spacer.Render(strings.Repeat(" ", rightGutter))
 
 	return lipgloss.JoinHorizontal(lipgloss.Center, left, filler, rightContent, rightPad)
+}
+
+// commandCandidatesView renders the :prompt's Tab-completion list (vim's
+// wildmenu) in room columns, or "" when there is no list to show. The
+// current name carries the selection highlight; the rest keep the bar's
+// colours, so the list reads as part of the prompt rather than a new
+// surface. Names are separated by two spaces.
+//
+// room is what the mode label, the prompt and the right-side pills left
+// over, so a long list can never widen the bar past the terminal: the
+// list shows a window of names around the current one, a "< " prefix
+// marks names dropped on the left and a " >" suffix names dropped on the
+// right, as vim's wildmenu does. The current name is the anchor -- the
+// user is cycling to it -- so it is never dropped; when even it has no
+// room, nothing is drawn at all.
+func (m Model) commandCandidatesView(room int) string {
+	n := len(m.commandCandidates)
+	if n == 0 || room <= 0 {
+		return ""
+	}
+	idx := m.commandCandidateIdx
+	if idx < 0 || idx >= n {
+		idx = 0
+	}
+	// The bar's own style carries Padding(0, 1); the list spaces its names
+	// itself, so only its colours are wanted here.
+	plain := styles.StatusBar.UnsetPadding()
+	rendered := make([]string, n)
+	widths := make([]int, n)
+	for i, name := range m.commandCandidates {
+		if i == idx {
+			rendered[i] = styles.SelectionStyle().Render(name)
+		} else {
+			rendered[i] = plain.Render(name)
+		}
+		widths[i] = lipgloss.Width(rendered[i])
+	}
+
+	// Two spaces separate the entries; when names to the left of the window
+	// were dropped, a "< " prefix (its own trailing space included) marks
+	// them, and a " >" suffix marks names dropped on the right.
+	const marker, moreMarker = "< ", " >"
+	markerWidth, moreWidth := lipgloss.Width(marker), lipgloss.Width(moreMarker)
+
+	// windowWidth is the rendered width of names[start:end]: the names, two
+	// spaces between each pair, the "< " marker when names[0] is hidden and
+	// the " >" marker when the last name is.
+	windowWidth := func(start, end int) int {
+		w := 0
+		for i := start; i < end; i++ {
+			w += widths[i]
+		}
+		if end > start {
+			w += 2 * (end - start - 1)
+		}
+		if start > 0 {
+			w += markerWidth
+		}
+		if end < n {
+			w += moreWidth
+		}
+		return w
+	}
+
+	// The current name is the anchor — the user is cycling to it — so it is
+	// never dropped. If even it (with the markers for the names hidden on
+	// either side) has no room, the list is not drawn at all: a truncated command
+	// name would name nothing the user could type.
+	if windowWidth(idx, idx+1) > room {
+		return ""
+	}
+
+	start, end := idx, idx+1
+	// Grow forward first: the names just past the current one are the ones
+	// Tab reaches next.
+	for end < n && windowWidth(start, end+1) <= room {
+		end++
+	}
+	// Then take whatever room is left on the left, the current name still
+	// anchored.
+	for start > 0 && windowWidth(start-1, end) <= room {
+		start--
+	}
+
+	// The gap between entries carries the bar's background explicitly, the
+	// way the right-side separators do: a bare "  " would leave the
+	// terminal's default colour showing through on a themed bar.
+	gap := lipgloss.NewStyle().Background(styles.SurfaceDark).Render("  ")
+	joined := strings.Join(rendered[start:end], gap)
+	if start > 0 {
+		joined = plain.Render(marker) + joined
+	}
+	if end < n {
+		joined += plain.Render(moreMarker)
+	}
+	return joined
 }
 
 // joinRightParts joins the right-side segments with sep between each,

@@ -1,9 +1,11 @@
 package blockkit
 
 import (
+	"bytes"
 	"context"
 	"image"
 	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 
@@ -196,4 +198,113 @@ func TestLegacyAttachmentSixelRowIncludesPretextOffset(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The PRERENDERED fast path must split by protocol exactly like the
+// slow path: a prerendered sixel image's OnFlush is the raw DCS pixel
+// stream, and handing it out as a flush made every pane that renders
+// the entry write the payload bare at the cursor - the screen
+// corruption a merge between the prerender fast path and the sixel
+// placement fix reintroduced (the fast path predates the split and
+// kept the unconditional flush).
+func TestPrerenderedBlockImageSplitsByProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		proto     imgpkg.Protocol
+		wantFlush bool
+		wantSixel bool
+	}{
+		{"sixel goes to the placement pipeline", imgpkg.ProtoSixel, false, true},
+		{"kitty keeps the flush", imgpkg.ProtoKitty, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache, err := imgpkg.NewCache(t.TempDir(), 10)
+			if err != nil {
+				t.Fatalf("NewCache: %v", err)
+			}
+			fetcher := imgpkg.NewFetcher(cache, nil)
+			const url = "https://example.com/prerendered.png"
+			key := urlCacheKey(url)
+			if _, err := cache.Put(key, "png", makeTestPNG(720, 720)); err != nil {
+				t.Fatalf("cache.Put: %v", err)
+			}
+			// The context must carry the REAL fetcher (imageCtx's stub
+			// never populates its prerender cache), configured for the
+			// protocol the way SetImageContext does at startup - for
+			// kitty that includes hooking a renderer into the worker
+			// via ConfigurePrerenderKitty, without which the worker
+			// skips the kitty prerender entirely. The prime fetch must
+			// run AFTER that (carrying the cell target) for the worker
+			// to bake the prerender the fast path reads.
+			ctx := Context{
+				Protocol:   tc.proto,
+				Fetcher:    fetcher,
+				CellPixels: image.Pt(10, 20),
+				MaxRows:    4,
+				RenderText: func(s string, _ map[string]string) string { return s },
+				WrapText:   func(s string, _ int) string { return s },
+			}
+			fetcher.ConfigurePrerender(ctx.Protocol)
+			if tc.proto == imgpkg.ProtoKitty {
+				fetcher.ConfigurePrerenderKitty(imgpkg.NewKittyRenderer(imgpkg.NewRegistry()))
+			} else {
+				fetcher.ConfigurePrerenderKitty(nil)
+			}
+			// The prime's targets must match the render's exactly:
+			// the context above gives CellPixels (10,20) and MaxRows 4, so a
+			// square 320x320 block at width 80 renders at target
+			// (8,4) cells = (80,80) pixels. A mismatched prime
+			// leaves Prerendered missing and the test would exercise
+			// the slow path instead of the fast path under test.
+			if _, err := fetcher.Fetch(context.Background(), imgpkg.FetchRequest{
+				Key:        key,
+				URL:        "unused://disk-cache-hits-skip-network",
+				Target:     image.Pt(80, 80),
+				CellTarget: image.Pt(8, 4),
+			}); err != nil {
+				t.Fatalf("Fetch (prerender prime): %v", err)
+			}
+			// Guard: both cases must take the fast path. A miss here
+			// (protocol unconfigured, kitty renderer missing, prime
+			// target off) falls to the slow path, which already splits
+			// by protocol - the assertions below would pass without
+			// the code under test ever running.
+			if _, ok := fetcher.Prerendered(key, image.Pt(8, 4), tc.proto); !ok {
+				t.Fatalf("prerender prime missed: no Prerendered entry for key %s at 8x4, the render would take the slow path", key)
+			}
+
+			r := Render([]Block{ImageBlock{URL: url, Alt: "a", Width: 320, Height: 320}}, ctx, 80)
+
+			if got := len(r.Flushes) > 0; got != tc.wantFlush {
+				t.Errorf("flushes present = %v, want %v", got, tc.wantFlush)
+			}
+			if got := len(r.SixelRows) > 0; got != tc.wantSixel {
+				t.Errorf("SixelRows present = %v, want %v", got, tc.wantSixel)
+			}
+			if tc.wantSixel {
+				for _, sx := range r.SixelRows {
+					if len(sx.Bytes) == 0 {
+						t.Error("prerendered sixel placement carries no bytes")
+					}
+				}
+			}
+		})
+	}
+}
+
+// makeTestPNG synthesizes a w×h RGBA PNG: fixture bytes for the
+// inline-image cache so tests don't need network access. Mirrors the
+// messages package's helper (unexported there, unexported here).
+func makeTestPNG(w, h int) []byte {
+	src := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			src.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 128, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, src); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
 }

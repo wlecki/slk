@@ -391,6 +391,9 @@ func TestHTMLEntityDecoding(t *testing.T) {
 		{"greater-than", "2 &gt; 1", "2 > 1"},
 		{"all three", "a &amp; b &lt; c &gt; d", "a & b < c > d"},
 		{"mixed with bold", "*Hide &amp; Seek*", "Hide & Seek"},
+		// The link style underlines each rune separately, so a label is
+		// decoded before styling, not by the line-level pass.
+		{"link label", "<https://example.com/|Hide &amp; Seek &gt; it>", "Hide & Seek > it"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

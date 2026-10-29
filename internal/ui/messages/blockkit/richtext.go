@@ -1,6 +1,7 @@
 package blockkit
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -17,7 +18,9 @@ import (
 //
 // The output is Slack mrkdwn wire form — *bold*, _italic_, ~strike~,
 // `code`, <url|label>, <@U…>, <#C…>, <!subteam^S…>, <!here>, :emoji: —
-// which the host can pass to RenderSlackMarkdown unchanged.
+// which the host can pass to RenderSlackMarkdown unchanged. An app's
+// link chip (attachment_mention) becomes <url|title>, so it shows its
+// title in place of the URL as Slack's client does.
 func RichTextToMrkdwn(rt RichTextBlock) string {
 	if len(rt.Elements) == 0 {
 		return ""
@@ -83,9 +86,39 @@ func inlineToMrkdwn(e slack.RichTextSectionElement) string {
 		return strconv.FormatInt(int64(v.Timestamp), 10)
 	case *slack.RichTextSectionColorElement:
 		return v.Value
+	case *slack.RichTextSectionUnknownElement:
+		if m, ok := attachmentMention(v); ok {
+			return linkToMrkdwn(m.URL, mrkdwnEscaper.Replace(m.Text))
+		}
 	}
 	return ""
 }
+
+// attachmentMentionElement is the part of a rich_text "attachment_mention"
+// element slk renders. Slack's web client writes one when a pasted link
+// turns into an app's chip (a Work Object, e.g. a Linear issue): url is
+// the link and text the title the chip shows. slack-go has no type for
+// it, so it arrives as a RichTextSectionUnknownElement with its raw JSON.
+type attachmentMentionElement struct {
+	URL  string `json:"url"`
+	Text string `json:"text"`
+}
+
+// attachmentMention decodes e when it is an attachment_mention with a
+// URL; anything else (another unknown kind, bad JSON, no URL) reports
+// false and is dropped like any other unknown element.
+func attachmentMention(e *slack.RichTextSectionUnknownElement) (attachmentMentionElement, bool) {
+	var m attachmentMentionElement
+	if e.Type != "attachment_mention" || json.Unmarshal([]byte(e.Raw), &m) != nil || m.URL == "" {
+		return m, false
+	}
+	return m, true
+}
+
+// mrkdwnEscaper entity-escapes text placed inside Slack markup, the way
+// Slack escapes its own text field; the renderers decode it after
+// matching <url|label>, so a ">" in the label cannot end the link early.
+var mrkdwnEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
 // textToMrkdwn applies style flags around a literal text run. Bare
 // "\n" text elements (used by Slack to separate sibling paragraphs
@@ -197,6 +230,10 @@ func preformattedToMrkdwn(elements []slack.RichTextSectionElement) string {
 			b.WriteString(v.Text)
 		case *slack.RichTextSectionLinkElement:
 			b.WriteString(v.URL)
+		case *slack.RichTextSectionUnknownElement:
+			if m, ok := attachmentMention(v); ok {
+				b.WriteString(m.URL)
+			}
 		}
 	}
 	return "```\n" + b.String() + "\n```"

@@ -21,7 +21,8 @@ type Link struct {
 
 // ExtractLinks returns the links in text in order of appearance,
 // deduplicated by URL (first occurrence wins). Returns nil when text
-// has no links.
+// has no links. Labels are entity-decoded (&amp; &lt; &gt;) the way the
+// renderer shows them, so the link picker matches the message.
 func ExtractLinks(text string) []Link {
 	type posLink struct {
 		start int
@@ -31,7 +32,7 @@ func ExtractLinks(text string) []Link {
 	for _, m := range linkWithLabelRe.FindAllStringSubmatchIndex(text, -1) {
 		found = append(found, posLink{
 			start: m[0],
-			link:  Link{URL: text[m[2]:m[3]], Label: text[m[4]:m[5]]},
+			link:  Link{URL: text[m[2]:m[3]], Label: slackEntityDecoder.Replace(text[m[4]:m[5]])},
 		})
 	}
 	for _, m := range linkBareRe.FindAllStringSubmatchIndex(text, -1) {

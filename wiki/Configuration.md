@@ -20,6 +20,7 @@ hide_deactivated_users = true   # hide deactivated people, as the Slack desktop
 [appearance]
 theme = "dracula"
 timestamp_format = "3:04 PM"
+show_avatars = true      # false hides the avatars beside messages
 image_protocol = "auto"   # auto | kitty | sixel | halfblock | off
 kitty_placement = "auto"  # auto | native | emulated: who places kitty images.
                           # auto = emulated on WezTerm (no unicode

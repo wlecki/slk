@@ -217,7 +217,10 @@ func reduceWorkspaceReady(a *App, m WorkspaceReadyMsg) tea.Cmd {
 		a.sidebar.SetActivityActive(false)
 		a.activityView.SetItems(nil)
 		a.activityView.SetBodies(nil)
-		a.sidebar.SetActivityUnreadCount(0)
+		// Same as the switch arm: the workspace's stored activity
+		// total, which connectWorkspace sent (or a
+		// badge_counts_updated event set) before this landed.
+		a.sidebar.SetActivityUnreadCount(a.activityBadgeTotals[m.TeamID])
 		a.lastOpenedChannelID = ""
 		a.lastOpenedThreadTS = ""
 		// Apply the resolved theme for the initial active
@@ -364,7 +367,11 @@ func reduceWorkspaceSwitched(a *App, m WorkspaceSwitchedMsg) tea.Cmd {
 	a.sidebar.SetThreadsUnreadCount(0)
 	a.activityView.SetItems(nil)
 	a.activityView.SetBodies(nil)
-	a.sidebar.SetActivityUnreadCount(0)
+	// The incoming workspace's badge is its stored activity total, not
+	// zero: the boot counts call (or badge_counts_updated since) left
+	// the real number in activityBadgeTotals. A workspace with no entry
+	// - a grid-restricted member - keeps zero.
+	a.sidebar.SetActivityUnreadCount(a.activityBadgeTotals[m.TeamID])
 	a.lastOpenedChannelID = ""
 	a.lastOpenedThreadTS = ""
 	a.CloseThread()

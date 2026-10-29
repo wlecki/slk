@@ -118,6 +118,10 @@ Contributions are welcome. A few ground rules:
 - Whether human- or AI-written, **you are responsible for your PR.**
   Understand the diff, make sure it builds and passes `go vet ./...` and
   `go test ./...`, and be ready to explain your choices in review.
+- **Inactive PRs are closed.** A pull request with no activity for 14
+ days gets a warning, and it's closed 7 days later (21 days in total)
+ unless there's a push, comment or review in the meantime. You can
+ reopen it whenever you pick it back up.
 
 ## Disclaimer
 
