@@ -326,8 +326,8 @@ func (a *App) retargetActiveChannel(id, name, chType string) tea.Cmd {
 	// Sendable unless a failed send marked this channel read-only, its
 	// DM peer is deactivated or an earlier probe found it unsendable;
 	// the probe fired below overwrites the last.
-	debuglog.General("compose: channel selected channel=%s chType=%s readOnlyMark=%v unsendable=%v",
-		id, chType, a.readOnlyChannels[id], a.unsendableChannels[id])
+	debuglog.General("compose: channel selected channel=%s chType=%s readOnlyMark=%v deactivated=%v unsendable=%v",
+		id, chType, a.readOnlyChannels[id], a.peerDeactivated(id), a.unsendableChannels[id])
 	a.syncComposeDisabled("channel_switch")
 	// A caller may have entered insert mode first (reopening a DM); the
 	// hidden composer must not keep taking keys.

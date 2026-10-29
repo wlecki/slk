@@ -127,3 +127,17 @@ func TestDeactivationBeforeTheConversationRow(t *testing.T) {
 		t.Error("composer enabled after the row named a deactivated peer")
 	}
 }
+
+func TestDeactivatedAppDMOutranksAWritableProbe(t *testing.T) {
+	// A1 is only in the sidebar, so its peer comes from there.
+	a := deactivatedApp()
+	a.SetDeactivatedUsers(map[string]bool{"U3": true})
+	a.Update(ChannelSelectedMsg{ID: "A1", Name: "A1", Type: "app"})
+	a.Update(ChannelMessagingCapabilityMsg{ChannelID: "A1", CanSend: true})
+	if !a.composeDisabled {
+		t.Fatal("a CanSend:true probe re-enabled a DM with a deactivated app")
+	}
+	if got := a.composeBlockedText(); got != deactivatedToast {
+		t.Errorf("reason = %q, want %q", got, deactivatedToast)
+	}
+}

@@ -389,11 +389,11 @@ func (m *Model) HandleKey(keyStr string) *ChannelResult {
 // filter rebuilds the filtered list based on the current query.
 //
 // Ranking precedence (most significant first):
+//  0. A DM with a deactivated user is left out under empty-query and, with
+//     a query, comes after every other match.
 //  1. Synthetic destinations (e.g. Threads view) under empty-query — pinned
 //     to the top so non-channel views are always discoverable. With a query,
 //     synthetic items rank by name match like everything else.
-//     A DM with a deactivated user is left out under empty-query and, with
-//     a query, comes after every other match.
 //  2. Joined (members of the channel/DM come before non-members)
 //  3. Match tier: prefix > substring > subsequence (only when querying)
 //  4. LastVisited DESC (recency of user's last visit)
