@@ -181,7 +181,10 @@ account is deactivated, matching the Slack desktop client. It applies to:
 - DM and app rows in the sidebar (including starred ones and ones with unread
   messages; the conversation you have open is never hidden, so a permalink or
   history jump to it still works)
-- the channel finder (`Ctrl+t` / `Ctrl+p`) and the forward picker
+- the channel finder's list before you type (`Ctrl+t` / `Ctrl+p`) and the
+  forward picker. Type part of the person's name to find the old DM on
+  purpose: it shows dimmed, tagged `deactivated`, below every other match,
+  and opens to its history
 - the new-message picker (`Ctrl+n`)
 - `@` mention autocomplete and `#` autocomplete in both composers
 
@@ -191,6 +194,9 @@ conversation list and from each user's profile. After an upgrade it refreshes
 the people in your open DMs and in the channels you open, so someone you have
 not met in a long while may only be hidden from `@` autocomplete once their
 profile is next fetched. Set the option to `false` to show everyone again.
+
+You can't send messages to a deactivated account, so the composer of such a DM
+is disabled, whether the option is on or off.
 
 ## Section resolution
 
