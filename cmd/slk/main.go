@@ -1520,7 +1520,7 @@ func run() error {
 		external, _ := db.ExternalUsers(wctx.TeamID)
 		// Global, not per workspace: the cache's whole set plus this
 		// workspace's IM peers Slack flagged.
-		deactivated := deactivatedUsers(db)
+		deactivated, deactivatedAsOf := deactivatedUsers(db)
 
 		// Statuses and presence are re-read from the cache, which live
 		// changes keep current, rather than the connect-time items. DND
@@ -1549,6 +1549,7 @@ func run() error {
 			UserStatuses:     statuses,
 			ExternalUsers:    external,
 			DeactivatedUsers: deactivated,
+			DeactivatedSeq:   deactivatedAsOf,
 			UserID:           wctx.UserID,
 			CustomEmoji:      wctx.CustomEmoji(),
 			UserGroups:       wctx.UserGroups(),
@@ -1746,7 +1747,7 @@ func run() error {
 			external, _ := db.ExternalUsers(wctx.TeamID)
 			// Bootstrap revalidation has already refreshed the cache's
 			// deactivated flags by now.
-			deactivated := deactivatedUsers(db)
+			deactivated, deactivatedAsOf := deactivatedUsers(db)
 
 			readyStatuses := cachedPeerStatuses(db, wctx.TeamID)
 			wctx.PeerStatus.SeedHuddles(readyStatuses)
@@ -1768,6 +1769,7 @@ func run() error {
 				UserStatuses:     readyStatuses,
 				ExternalUsers:    external,
 				DeactivatedUsers: deactivated,
+				DeactivatedSeq:   deactivatedAsOf,
 				UserID:           wctx.UserID,
 				CustomEmoji:      wctx.CustomEmoji(), // bootstrap subset; replaced by the goroutine below
 				UserGroups:       wctx.UserGroups(),  // empty at this point; filled by the goroutine below
