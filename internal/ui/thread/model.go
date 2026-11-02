@@ -36,6 +36,7 @@ type Model struct {
 	selected         int
 	focused          bool
 	coloredUsernames bool
+	showAvatars      bool
 	avatarFn         messages.AvatarFunc
 	userNames        map[string]string
 	userStatuses     map[string]peerstatus.Status
@@ -301,8 +302,9 @@ func (m *Model) SetBreadcrumb(channelName, channelType string) {
 // breadcrumbAuthor is the parent's display name: the parent's own
 // UserName, else the userNames entry for its UserID.
 func (m *Model) breadcrumbAuthor() string {
-	if m.parent.UserName != "" {
-		return m.parent.UserName
+	// A huddle with replies is its starter's message (messages.HuddleView).
+	if p := m.huddleView(m.parent); p.UserName != "" {
+		return p.UserName
 	}
 	return m.userNames[m.parent.UserID]
 }
@@ -504,6 +506,26 @@ func (m *Model) UpdateMessageInPlace(item messages.MessageItem) bool {
 	return false
 }
 
+// SetHuddleRoom replaces the huddle room of the reply or parent with the
+// given TS. The room is treated as immutable. Returns true if found.
+func (m *Model) SetHuddleRoom(ts string, room *messages.HuddleRoom) bool {
+	found := false
+	for i := range m.replies {
+		if m.replies[i].TS == ts {
+			m.replies[i].HuddleRoom = room
+			found = true
+		}
+	}
+	if m.parent.TS == ts {
+		m.parent.HuddleRoom = room
+		found = true
+	}
+	if found {
+		m.InvalidateCache()
+	}
+	return found
+}
+
 // RemoveMessageByTS removes a reply by TS, adjusting the selected
 // index so it remains valid. Returns true if found.
 func (m *Model) RemoveMessageByTS(ts string) bool {
@@ -579,6 +601,13 @@ func (m *Model) SetUserNames(names map[string]string) {
 // with the new coloring.
 func (m *Model) SetColoredUsernames(enabled bool) {
 	m.coloredUsernames = enabled
+	m.InvalidateCache()
+}
+
+// SetShowAvatars draws the avatar from SetAvatarFunc beside each message
+// ([appearance] thread_avatars). Invalidates the render cache.
+func (m *Model) SetShowAvatars(enabled bool) {
+	m.showAvatars = enabled
 	m.InvalidateCache()
 }
 
@@ -1151,6 +1180,12 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 				parent.Hits = append(parent.Hits, h)
 			}
 		}
+		// The parent's lines are assembled here rather than through
+		// WrapRows, so its clickable spans are scanned from the final
+		// rendered rows directly; HitsFromSpans classifies its own
+		// file attachments against their URLs, as WrapRows does.
+		parent.Hits = append(parent.Hits,
+			messages.HitsFromSpans(messages.ScanOsc8Spans(parent.Lines), m.parent)...)
 	}
 
 	if len(m.replies) == 0 {
@@ -1228,7 +1263,7 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 				Selected:   w.Selected,
 				Plain:      w.Plain,
 				ColOffset:  1,
-				Hits:       r.Hits,
+				Hits:       append(r.Hits, w.LinkHits...),
 			})
 			m.cache = append(m.cache, messages.EntryPayload{ShortSrc: w.ShortSrc, Flushes: flushes})
 			m.replyIDToIdx[reply.TS] = i
@@ -1263,12 +1298,7 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 			Align(lipgloss.Center).
 			Render("── new ──")
 	}
-	dateSeparatorStyle := lipgloss.NewStyle().
-		Width(width).
-		Background(styles.Background).
-		Foreground(styles.TextMuted).
-		Bold(true).
-		Align(lipgloss.Center)
+	dateSeparatorStyle := messages.DividerStyle(width)
 	decoration := func(row string) entrylist.Entry { return entrylist.Entry{Ref: -1, Lines: []string{row}} }
 	entries := make([]entrylist.Entry, 0, 2*len(m.replyEntries)+2)
 	entries = append(entries, parent)
@@ -1343,6 +1373,17 @@ func (m *Model) HitTestReaction(row, col int) (replyIdx int, emoji string, ok bo
 	return h.Ref, h.Key, true
 }
 
+// HitTestLink returns the URL of the hyperlink at (row, col) within
+// the thread's content area, or ok=false when no link span covers that
+// cell. Coordinate frame mirrors HitTestReaction.
+func (m *Model) HitTestLink(row, col int) (url string, ok bool) {
+	h, ok := m.list.HitTest(entrylist.HitLink, row, col)
+	if !ok || h.Key == "" {
+		return "", false
+	}
+	return h.Key, true
+}
+
 // HitTestImage returns the ts of the message (the parent or a reply)
 // and the attachment index of the inline image at (row, col) within the
 // thread's content area, or ok=false when no image footprint covers
@@ -1411,10 +1452,25 @@ func (m *Model) renderContext() *messages.RenderContext {
 	}
 }
 
-// renderMessage renders msg with the thread pane's options: no avatar
-// (even with SetAvatarFunc), no "(edited)", no broadcast label, no reply
+// renderMessage renders msg with the thread pane's options: an avatar
+// only with SetShowAvatars, no "(edited)", no broadcast label, no reply
 // affordance and no sixel rows (plan decision P3). Image hits are
 // recorded so a click opens the preview, as in the channel pane.
 func (m *Model) renderMessage(msg messages.MessageItem, width int, isSelected bool) messages.RenderedMessage {
-	return messages.RenderMessage(msg, width, m.renderContext(), messages.RenderOptions{IsSelected: isSelected, ImageHits: true})
+	msg = m.huddleView(msg)
+	opt := messages.RenderOptions{IsSelected: isSelected, ImageHits: true}
+	if m.showAvatars && m.avatarFn != nil {
+		opt.Avatar = m.avatarFn(msg.UserID)
+	}
+	return messages.RenderMessage(msg, width, m.renderContext(), opt)
+}
+
+// huddleView is the render copy of a huddle announcement: a message by
+// its starter when the thread has replies (the parent's own ReplyCount may
+// lag behind the loaded replies), else unchanged. See messages.HuddleView.
+func (m *Model) huddleView(msg messages.MessageItem) messages.MessageItem {
+	if msg.TS == m.parent.TS && len(m.replies) > msg.ReplyCount {
+		msg.ReplyCount = len(m.replies)
+	}
+	return messages.HuddleView(msg, m.userNames)
 }

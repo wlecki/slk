@@ -172,13 +172,36 @@ var reduceThreads reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 		// Threads-view opens build the parent from the list summary,
 		// which has text but no formatted time — take just that field.
 		if parentMsg.Text == "" || parentMsg.Timestamp == "" || parentMsg.TS != m.ThreadTS {
-			if cached := a.threads.CacheRead(ids.ChannelID(channelID), ids.ThreadTS(m.ThreadTS)); len(cached) > 0 && cached[0].Text != "" {
+			if cached := a.threads.CacheRead(ids.ChannelID(channelID), ids.ThreadTS(m.ThreadTS)); len(cached) > 0 && (cached[0].Text != "" || cached[0].Subtype != "" || len(cached[0].Blocks) > 0) {
 				if parentMsg.Text == "" || parentMsg.TS != m.ThreadTS {
+					count := parentMsg.ReplyCount
 					parentMsg = cached[0]
+					if parentMsg.TS == m.ThreadTS {
+						parentMsg.ReplyCount = max(parentMsg.ReplyCount, count)
+					}
 				} else if parentMsg.Timestamp == "" {
 					parentMsg.Timestamp = cached[0].Timestamp
+					// The summary a threads-list parent is built from has
+					// no huddle room either.
+					if cached[0].TS == parentMsg.TS {
+						if parentMsg.HuddleRoom == nil {
+							parentMsg.HuddleRoom = cloneHuddleRoom(cached[0].HuddleRoom)
+						}
+						// huddleStarterName keys on the huddle_thread subtype.
+						if parentMsg.Subtype == "" {
+							parentMsg.Subtype = cached[0].Subtype
+						}
+					}
 				}
 			}
+		}
+		// The open gate saw only a stub for an uncached parent. Now that
+		// the real parent is known, a system notice with no replies (an
+		// authoritative result that carries none) closes the panel again.
+		// Loaded replies prove the thread, whatever the stale count says.
+		if !m.FromCache && len(m.Replies) == 0 && !messages.CanOpenThread(parentMsg) {
+			a.CloseThread()
+			return a.cantReplyToNotice(), true
 		}
 		// Ephemeral replies already on screen are carried over: the
 		// fetch never contains them, and opening a thread clears the
@@ -415,7 +438,7 @@ var reduceThreads reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 			}
 		}
 		for _, mm := range a.modelsForChannel(m.ChannelID) {
-			mm.IncrementReplyCount(m.ThreadTS, m.Message.TS)
+			mm.IncrementReplyCount(m.ThreadTS, m.Message.TS, m.Message.UserID)
 		}
 		if c := a.scheduleThreadsDirty(); c != nil {
 			return c, true

@@ -607,6 +607,15 @@ func SidebarMutedFgANSI() string {
 	return cachedSidebarMutedFgANSI
 }
 
+// SidebarSelectedANSI is the bg+fg escape of the sidebar's selected pill,
+// "" when the theme sets no sidebar_selected_bg.
+func SidebarSelectedANSI() string {
+	if styles.SidebarSelectedBg == nil {
+		return ""
+	}
+	return bgANSIFor(styles.SidebarSelectedBg) + fgANSIFor(styles.SidebarSelectedFg)
+}
+
 // RenderSlackMarkdownOpts extends the legacy 3-arg RenderSlackMarkdown
 // signature with optional emoji-image rendering. When PlaceCtx.Fetcher
 // is non-nil AND emoji.ImageModeActive() returns true, emoji are
@@ -899,6 +908,10 @@ func renderEmojiTokensInline(
 				placement, flush, ok := emojiutil.Place(placeCtx, tok.URL, cells)
 				if ok {
 					b.WriteString(placement)
+					// The image ends in "default foreground", not a reset.
+					if strings.HasSuffix(placement, "\x1b[39m") {
+						b.WriteString(FgANSI())
+					}
 					if flush != nil && flushes != nil {
 						*flushes = append(*flushes, flush)
 					}

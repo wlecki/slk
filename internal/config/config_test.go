@@ -900,6 +900,33 @@ func TestEffectiveUseSlackSections_UnknownTeamUsesGlobal(t *testing.T) {
 	}
 }
 
+func TestConfig_RightAlignBadges(t *testing.T) {
+	for _, tc := range []struct {
+		toml string
+		want bool
+	}{{"", false}, {"[sidebar]\nright_align_badges = true\n", true}} {
+		cfg := loadConfigString(t, tc.toml)
+		if cfg.Sidebar.RightAlignBadges != tc.want {
+			t.Errorf("%q: right_align_badges = %v, want %v", tc.toml, cfg.Sidebar.RightAlignBadges, tc.want)
+		}
+	}
+}
+
+func TestConfig_ChannelIndent(t *testing.T) {
+	cfg := loadConfigString(t, "[sidebar]\nchannel_indent = 3\n")
+	if cfg.Sidebar.ChannelIndent != 3 {
+		t.Errorf("channel_indent = %d, want 3", cfg.Sidebar.ChannelIndent)
+	}
+}
+
+func TestConfig_SidebarSlackOptions(t *testing.T) {
+	cfg := loadConfigString(t, "[sidebar]\nslack_style = true\nprivate_glyph = \"L\"\nactive_only = true\nmouse_resize = true\n")
+	s := cfg.Sidebar
+	if !s.SlackStyle || s.PrivateGlyph != "L" || !s.ActiveOnly || !s.MouseResize {
+		t.Errorf("parsed %+v", s)
+	}
+}
+
 func TestMatchSectionAndOrder_ExplicitOrder(t *testing.T) {
 	c := Config{
 		Sections: map[string]SectionDef{
@@ -1003,6 +1030,18 @@ func TestMatchSectionAndOrder_WorkspaceOverride(t *testing.T) {
 	}
 }
 
+func TestConfig_MentionPills(t *testing.T) {
+	for _, tc := range []struct {
+		toml string
+		want bool
+	}{{"", false}, {"[sidebar]\nmention_pills = true\n", true}} {
+		cfg := loadConfigString(t, tc.toml)
+		if cfg.Sidebar.MentionPills != tc.want {
+			t.Errorf("%q: mention_pills = %v, want %v", tc.toml, cfg.Sidebar.MentionPills, tc.want)
+		}
+	}
+}
+
 func TestWorkspaceVersionTSRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -1062,6 +1101,18 @@ func TestKittyPlacement_DefaultsAndClamp(t *testing.T) {
 	}
 }
 
+func TestConfig_ReplyAvatars(t *testing.T) {
+	for _, tc := range []struct {
+		toml string
+		want bool
+	}{{"", false}, {"[appearance]\nreply_avatars = true\n", true}} {
+		cfg := loadConfigString(t, tc.toml)
+		if cfg.Appearance.ReplyAvatars != tc.want {
+			t.Errorf("%q: reply_avatars = %v, want %v", tc.toml, cfg.Appearance.ReplyAvatars, tc.want)
+		}
+	}
+}
+
 // hide_deactivated_users is a plain bool that defaults to on: Load decodes
 // over Default(), so an explicit false must still read back.
 func TestConfig_HideDeactivatedUsers(t *testing.T) {
@@ -1108,5 +1159,31 @@ func TestConfig_ShowAvatars(t *testing.T) {
 	}
 	if cfg.Appearance.ShowAvatars {
 		t.Error("expected show_avatars = false to turn avatars off")
+	}
+}
+
+func TestConfig_ThreadAvatars(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Appearance.ThreadAvatars {
+		t.Error("expected thread_avatars off by default")
+	}
+
+	if err := os.WriteFile(path, []byte("[appearance]\nthread_avatars = true\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Appearance.ThreadAvatars {
+		t.Error("expected thread_avatars = true to turn thread avatars on")
 	}
 }

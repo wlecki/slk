@@ -1304,3 +1304,15 @@ func TestDeactivatedUserIsNotSuggestedButStillTranslated(t *testing.T) {
 		t.Errorf("TranslateMentionsForSend = %q, want %q", got, want)
 	}
 }
+
+// TestRefreshStylesBumpsVersion: a restyle changes what View renders,
+// so it must bump the render version like every other such mutation
+// (#192).
+func TestRefreshStylesBumpsVersion(t *testing.T) {
+	m := New("general")
+	v := m.Version()
+	m.RefreshStyles()
+	if m.Version() == v {
+		t.Errorf("Version() = %d after RefreshStyles, want it bumped", m.Version())
+	}
+}

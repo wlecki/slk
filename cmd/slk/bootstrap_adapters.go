@@ -77,6 +77,17 @@ func (a bootAdapter) UserBoot(ctx context.Context) (*boot.Result, error) {
 	return boot.UserBoot(ctx, a.c.PostForm)
 }
 
+// bootSectionsClient reuses the starred list already fetched by bootstrap.Run.
+// Reconnects use the ordinary client to fetch a fresh userBoot snapshot instead.
+type bootSectionsClient struct {
+	*slackclient.Client
+	starred []string
+}
+
+func (a bootSectionsClient) GetStarredConversations(context.Context) ([]string, error) {
+	return a.starred, nil
+}
+
 // viewAdapter satisfies bootstrap.Viewer. Same pass-through as
 // bootAdapter; channelID may be "", which boot.ConversationsView turns
 // into an absent `channel` param rather than an empty one.
@@ -618,8 +629,9 @@ func hydrateFirstSight(db *cache.DB, workspaceID string, res *bootstrap.Result) 
 			DisplayName: bootUserDisplayName(u),
 			AvatarURL:   u.Profile.ImageOriginal,
 			// "away" is what every other first-sight write in slk
-			// records: a view result carries no presence, and the
-			// presence subscription corrects it on the first render.
+			// records: a view result carries no presence. UpsertUser
+			// keeps an existing row's presence, and the connect-time
+			// presence_query corrects a new one.
 			Presence:         "away",
 			IsBot:            u.IsBot || u.IsAppUser,
 			Deleted:          u.Deleted,

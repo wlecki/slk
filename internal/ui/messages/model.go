@@ -16,6 +16,7 @@ import (
 	"github.com/gammons/slk/internal/debuglog"
 	emojiutil "github.com/gammons/slk/internal/emoji"
 	imgpkg "github.com/gammons/slk/internal/image"
+	"github.com/gammons/slk/internal/slackurl"
 	"github.com/gammons/slk/internal/ui/imgrender"
 	"github.com/gammons/slk/internal/ui/messages/blockkit"
 	"github.com/gammons/slk/internal/ui/peerstatus"
@@ -30,6 +31,7 @@ type (
 	Attachment   = core.Attachment
 	ThumbSpec    = core.ThumbSpec
 	ReactionItem = core.ReactionItem
+	HuddleRoom   = core.HuddleRoom
 )
 
 // AvatarFunc returns the rendered half-block avatar for a user ID, or empty string.
@@ -112,15 +114,16 @@ type Model struct {
 	// dmTopic is the DM peer status channelTopic was built from
 	// (SetDMTopic), so the header can draw its emoji as images. Its
 	// zero value means channelTopic is plain text.
-	dmTopic      dmTopic
-	channelType  string // "channel", "private", "dm", "group_dm" -- drives header glyph
-	loading      bool
-	spinnerFrame int                          // braille-spinner frame index for "Loading messages..." animation
-	avatarFn     AvatarFunc                   // optional: returns half-block avatar for a userID
-	userNames    map[string]string            // user ID -> display name for mention resolution
-	userStatuses map[string]peerstatus.Status // user ID -> custom status shown after author names
-	channelNames map[string]string            // channel ID -> name for bare <#CID> resolution
-	userGroups   map[string]string            // usergroup ID -> handle for bare subteam resolution
+	dmTopic       dmTopic
+	channelType   string // "channel", "private", "dm", "group_dm" -- drives header glyph
+	loading       bool
+	spinnerFrame  int                          // braille-spinner frame index for "Loading messages..." animation
+	avatarFn      AvatarFunc                   // optional: returns half-block avatar for a userID
+	replyAvatarFn AvatarFunc                   // optional: small avatar for the reply row
+	userNames     map[string]string            // user ID -> display name for mention resolution
+	userStatuses  map[string]peerstatus.Status // user ID -> custom status shown after author names
+	channelNames  map[string]string            // channel ID -> name for bare <#CID> resolution
+	userGroups    map[string]string            // usergroup ID -> handle for bare subteam resolution
 
 	// searchTerms are folded word-prefix terms of the active in-channel
 	// search; non-empty enables highlight rendering. nil = no search.
@@ -360,7 +363,9 @@ func (m *Model) HandleAvatarReady(userID string) {
 	}
 	var marked bool
 	for _, msg := range m.messages {
-		if msg.UserID != userID {
+		// A huddle with replies is drawn as its starter's message, so the
+		// starter's avatar is the one it asks for, not the stored author's.
+		if msg.UserID != userID && !slices.Contains(msg.ReplyUsers, userID) && !(msg.Subtype == "huddle_thread" && HuddleStarter(msg) == userID) {
 			continue
 		}
 		if m.staleEntries == nil {
@@ -423,11 +428,70 @@ func MessageTextSource(msg MessageItem) string {
 	return msg.Text
 }
 
+// MessageCopyText is MessageTextSource with one more fallback: a
+// forwarded message carries its shared content in a legacy
+// attachment, with an empty top-level Text and no rich_text block --
+// exactly what renderMessagePlain's LegacyAttachments branch draws on
+// screen. Callers that report a message's text to the user (copy,
+// export, link extraction) need this fallback so a forwarded message
+// isn't reported as textless; the render path doesn't, since it
+// renders LegacyAttachments itself, separately from the body row.
+//
+// Multiple attachments (e.g. forwarding several messages at once, or a
+// forward alongside an unrelated link unfurl) return the first one
+// with any extractable text -- there's no field distinguishing "the
+// forward" from "an unfurl" to prefer one over the other, and no
+// signal for what "combine them" should even mean here.
+//
+// A forward sent with a comment has both: the comment is the top-level
+// text and the shared message an attachment whose FromURL is a Slack
+// permalink (the same test MessageLinks uses). The shared text is then
+// appended after the comment; ordinary link unfurls are never appended
+// to typed text.
+func MessageCopyText(msg MessageItem) string {
+	if text := MessageTextSource(msg); text != "" {
+		for _, la := range msg.LegacyAttachments {
+			if _, ok := slackurl.Parse(la.FromURL); !ok {
+				continue
+			}
+			if shared := legacyAttachmentText(la); shared != "" {
+				text += "\n\n" + shared
+			}
+		}
+		return text
+	}
+	for _, la := range msg.LegacyAttachments {
+		if text := legacyAttachmentText(la); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// legacyAttachmentText extracts the best available text from one
+// legacy attachment: Text (the classic shape -- a forwarded message),
+// then a rich_text block (Slack's newer link-unfurl shape, where
+// Title/Text/Fields are empty and the content lives in Blocks; see
+// LegacyAttachment's doc comment), then Title as a last resort.
+func legacyAttachmentText(la blockkit.LegacyAttachment) string {
+	if la.Text != "" {
+		return la.Text
+	}
+	for _, b := range la.Blocks {
+		if rt, ok := b.(blockkit.RichTextBlock); ok {
+			if reconstructed := blockkit.RichTextToMrkdwn(rt); reconstructed != "" {
+				return reconstructed
+			}
+		}
+	}
+	return la.Title
+}
+
 // BlocksCarryBody reports whether msg's blocks already render its body,
 // in which case the host adds no row for msg.Text. A non-empty rich_text
 // block is the exception: it renders through MessageTextSource and must
 // retain the host body row. This decision affects rendering only;
-// copying still uses msg.Text.
+// copying uses MessageCopyText.
 func BlocksCarryBody(msg MessageItem) bool {
 	for _, b := range msg.Blocks {
 		if rt, ok := b.(blockkit.RichTextBlock); ok && blockkit.RichTextToMrkdwn(rt) != "" {
@@ -835,9 +899,16 @@ type HitRect struct {
 // must use HitTest. Returns a freshly-allocated slice so callers
 // cannot mutate the internal cache.
 func (m *Model) LastHitsForTest() []HitRect {
+	return m.LastHitsForKindForTest(entrylist.HitImage)
+}
+
+// LastHitsForKindForTest is LastHitsForTest for one hit kind; Key
+// carries the URL for links and the file's URL for file lines.
+// Test-only; production code must use HitTest.
+func (m *Model) LastHitsForKindForTest(kind entrylist.HitKind) []HitRect {
 	out := []HitRect{}
 	for _, h := range m.list.Hits() {
-		if h.Kind != entrylist.HitImage {
+		if h.Kind != kind {
 			continue
 		}
 		out = append(out, HitRect{
@@ -1026,12 +1097,13 @@ func (m *Model) ClampReactionNav() {
 	m.dirty()
 }
 
-// IncrementReplyCount finds a message by TS and increments its ReplyCount.
+// IncrementReplyCount finds a message by TS, increments its ReplyCount and
+// adds userID to its ReplyUsers.
 // Idempotent on (parentTS, replyTS): the optimistic ThreadReplySentMsg path
 // and the WS echo NewMessageMsg path can both fire for the same reply --
 // pass the reply's own TS to dedup. An empty replyTS skips dedup (legacy
 // callers that don't yet pass it).
-func (m *Model) IncrementReplyCount(parentTS, replyTS string) {
+func (m *Model) IncrementReplyCount(parentTS, replyTS, userID string) {
 	if replyTS != "" {
 		if m.countedReplies == nil {
 			m.countedReplies = make(map[string]map[string]struct{})
@@ -1053,6 +1125,9 @@ func (m *Model) IncrementReplyCount(parentTS, replyTS string) {
 			// the bottom of the pane under the fold.
 			m.list.HoldBottom()
 			m.messages[i].ReplyCount++
+			if userID != "" && !slices.Contains(msg.ReplyUsers, userID) {
+				m.messages[i].ReplyUsers = append(slices.Clip(msg.ReplyUsers), userID)
+			}
 			m.dropCache()
 			m.dirty()
 			return
@@ -1071,6 +1146,21 @@ func (m *Model) UpdateMessageInPlace(item MessageItem) bool {
 		if msg.TS == item.TS {
 			m.list.HoldBottom()
 			m.messages[i].ApplyChange(item)
+			m.dropCache()
+			m.dirty()
+			return true
+		}
+	}
+	return false
+}
+
+// SetHuddleRoom replaces the huddle room of the message with the given
+// TS (a message_changed that carries a newer room, e.g. the huddle
+// ended). The room is treated as immutable. Returns true if found.
+func (m *Model) SetHuddleRoom(ts string, room *HuddleRoom) bool {
+	for i, msg := range m.messages {
+		if msg.TS == ts {
+			m.messages[i].HuddleRoom = room
 			m.dropCache()
 			m.dirty()
 			return true
@@ -1150,6 +1240,14 @@ func (m *Model) SetSpinnerFrame(f int) {
 
 func (m *Model) SetAvatarFunc(fn AvatarFunc) {
 	m.avatarFn = fn
+}
+
+// SetReplyAvatarFunc switches the reply row to Slack's look (repliers'
+// avatars, then "N replies"); nil keeps "[N replies ->]".
+func (m *Model) SetReplyAvatarFunc(fn AvatarFunc) {
+	m.replyAvatarFn = fn
+	m.dropCache()
+	m.dirty()
 }
 
 // ResolveUserName returns the display name for a user ID, or empty string if unknown.
@@ -1554,6 +1652,7 @@ func (m *Model) renderContext() *RenderContext {
 		ImageChannel:     m.channelName,
 		SearchTerms:      m.searchTerms,
 		Nav:              m.nav,
+		ReplyAvatar:      m.replyAvatarFn,
 	}
 }
 
@@ -1576,7 +1675,9 @@ func (m *Model) renderContext() *RenderContext {
 // renderMessageEntry does that itself so the count always matches the
 // number of entries produced.
 func (m *Model) renderMessageEntry(i int, width int, cs cacheStyles, stats *entryPerfStats) (entrylist.Entry, EntryPayload) {
-	msg := m.messages[i]
+	// The render copy: a huddle with replies is drawn as its starter's
+	// message. The stored item (m.messages[i]) is never changed.
+	msg := HuddleView(m.messages[i], m.userNames)
 	opt := RenderOptions{
 		IsSelected:      i == m.selected,
 		ReplyAffordance: true,
@@ -1620,7 +1721,7 @@ func (m *Model) renderMessageEntry(i int, width int, cs cacheStyles, stats *entr
 		Plain:      linesP,
 		ColOffset:  1, // thick left border ▌ occupies column 0 of Lines
 		Trail:      trail,
-		Hits:       r.Hits,
+		Hits:       append(r.Hits, w.LinkHits...),
 	}
 	return entry, EntryPayload{ShortSrc: w.ShortSrc, Flushes: flushes, sixelRows: r.SixelRows}
 }
@@ -1674,14 +1775,14 @@ func (m *Model) buildCache(width int, keepPosition bool) {
 	newMsgLandmarkInserted := false
 	for i, msg := range m.messages {
 		msgDate := DateFromTS(msg.TS)
+		afterDivider := false
 		if msgDate != "" && msgDate != lastDate {
 			label := FormatDateSeparator(msgDate)
 			sepStr := "── " + label + " ──"
-			sep := lipgloss.NewStyle().Background(styles.Background).Foreground(styles.TextMuted).Bold(true).
-				Width(width).Align(lipgloss.Center).
-				Render(sepStr)
+			sep := DividerStyle(width).Render(sepStr)
 			appendSeparator(sep)
 			lastDate = msgDate
+			afterDivider = true
 		}
 
 		// New message landmark: insert before the first unread message
@@ -1692,6 +1793,14 @@ func (m *Model) buildCache(width int, keepPosition bool) {
 				Render(newStr)
 			appendSeparator(label)
 			newMsgLandmarkInserted = true
+			afterDivider = true
+		}
+
+		// A system notice is itself a centred divider-style row, so right
+		// under another divider it needs the blank row a notice gets
+		// everywhere else (the previous message's trailing spacer).
+		if afterDivider && IsSystemNoticeSubtype(HuddleView(msg, m.userNames).Subtype) {
+			appendSeparator(strings.Join(cs.spacerLines, "\n"))
 		}
 
 		e, p := m.renderMessageEntry(i, width, cs, stats)
@@ -1883,6 +1992,17 @@ func (m *Model) HitTestFile(row, col int) (ts string, attIdx int, ok bool) {
 		return "", 0, false
 	}
 	return m.messages[h.Ref].TS, h.Aux, true
+}
+
+// HitTestLink returns the URL of the hyperlink at (row, col) within the
+// messages-pane content area, or ok=false when no link span covers that
+// cell. Coordinate frame mirrors HitTest.
+func (m *Model) HitTestLink(row, col int) (url string, ok bool) {
+	h, ok := m.list.HitTest(entrylist.HitLink, row, col)
+	if !ok || h.Key == "" {
+		return "", false
+	}
+	return h.Key, true
 }
 
 // HitTestReaction returns the (message index, reaction emoji name) at
@@ -2274,6 +2394,28 @@ func FormatShortDate(dateStr string) string {
 		return d.Format("Jan 2")
 	}
 	return d.Format("Jan 2, 2006")
+}
+
+// DividerStyle is the style of a day-divider row: muted, bold, centred in
+// width columns on the theme background. System notices use it too, so
+// they read like the date separators. Build it per draw (it reads the
+// current theme).
+func DividerStyle(width int) lipgloss.Style {
+	return dividerBaseStyle().Width(width).Align(lipgloss.Center)
+}
+
+// dividerBaseStyle is DividerStyle without its layout (Width, Align): the
+// attributes a divider or notice is drawn with. noticeRestoreSGR derives
+// from it, so the style and what is re-asserted after a highlight cannot
+// drift apart.
+func dividerBaseStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Background(styles.Background).Foreground(styles.TextMuted).Bold(true)
+}
+
+// noticeRestoreSGR is the opening SGR sequence of dividerBaseStyle, found by
+// rendering a sentinel and taking what precedes it.
+func noticeRestoreSGR() string {
+	return strings.SplitN(dividerBaseStyle().Render("\x00"), "\x00", 2)[0]
 }
 
 // FormatDateSeparator turns a "2006-01-02" date string into the

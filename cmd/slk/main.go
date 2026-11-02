@@ -649,6 +649,12 @@ func run() error {
 	if cfg.Appearance.ShowAvatars {
 		app.SetAvatarService(core.NewAvatarService(func(userID string) string {
 			return lazyAvatar(router.Active(), avatarCache, userID)
+		}, func(userID string) string {
+			if small := avatarCache.GetSmall(userID); small != "" {
+				return small
+			}
+			lazyAvatar(router.Active(), avatarCache, userID)
+			return ""
 		}))
 	}
 
@@ -1516,14 +1522,14 @@ func run() error {
 		// workspace's IM peers Slack flagged.
 		deactivated := deactivatedUsers(db)
 
-		// Statuses are re-read from the cache, which live changes keep
-		// current, rather than the connect-time items. DND is not
-		// cached; RefreshPeerDND below fetches it after the switch
+		// Statuses and presence are re-read from the cache, which live
+		// changes keep current, rather than the connect-time items. DND
+		// is not cached; RefreshPeerDND below fetches it after the switch
 		// applies, so the switch itself returns without waiting on the
 		// network.
 		statuses := cachedPeerStatuses(db, wctx.TeamID)
 		wctx.PeerStatus.SeedHuddles(statuses)
-		channels := withPeerStatuses(wctx.Channels, statuses)
+		channels := withCachedPresence(db, withPeerStatuses(wctx.Channels, statuses))
 
 		snap := workspacesStore.Snapshot()
 		// switchNames goes to the UI, which owns (and writes) it from

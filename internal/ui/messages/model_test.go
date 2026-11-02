@@ -20,8 +20,10 @@ import (
 	emojiutil "github.com/gammons/slk/internal/emoji"
 	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/ui/imgrender"
+	"github.com/gammons/slk/internal/ui/messages/blockkit"
 	"github.com/gammons/slk/internal/ui/peerstatus"
 	"github.com/gammons/slk/internal/ui/styles"
+	"github.com/slack-go/slack"
 )
 
 func TestMessagePaneView(t *testing.T) {
@@ -44,6 +46,143 @@ func TestMessagePaneView(t *testing.T) {
 	}
 }
 
+// A forwarded message carries its shared content in a legacy
+// attachment's Text, not msg.Text -- that's what actually renders on
+// screen (renderMessagePlain's LegacyAttachments branch). MessageCopyText
+// must fall back to it instead of reporting the message as textless.
+func TestMessageCopyText_FallsBackToLegacyAttachmentText(t *testing.T) {
+	msg := MessageItem{
+		UserName: "alice",
+		LegacyAttachments: []blockkit.LegacyAttachment{
+			{Text: "shared: check this out"},
+		},
+	}
+	if got := MessageCopyText(msg); got != "shared: check this out" {
+		t.Errorf("MessageCopyText = %q, want the legacy attachment's text", got)
+	}
+}
+
+// A message with real text must never be overridden by an unrelated
+// attachment (e.g. a link unfurl alongside genuine typed text).
+func TestMessageCopyText_PrefersOwnTextOverAttachment(t *testing.T) {
+	msg := MessageItem{
+		UserName: "alice",
+		Text:     "check this out",
+		LegacyAttachments: []blockkit.LegacyAttachment{
+			{Text: "Example Site - a page about things"},
+		},
+	}
+	if got := MessageCopyText(msg); got != "check this out" {
+		t.Errorf("MessageCopyText = %q, want the message's own text", got)
+	}
+}
+
+// A forward sent with a comment has top-level text plus an attachment
+// whose from_url is a Slack permalink; both must be copied.
+func TestMessageCopyText_CommentPlusForwardIncludesSharedText(t *testing.T) {
+	msg := MessageItem{
+		UserName: "alice",
+		Text:     "fyi",
+		LegacyAttachments: []blockkit.LegacyAttachment{{
+			Text:    "the shared message",
+			FromURL: "https://acme.slack.com/archives/C123ABC/p1700000000123456",
+		}},
+	}
+	want := "fyi\n\nthe shared message"
+	if got := MessageCopyText(msg); got != want {
+		t.Errorf("MessageCopyText = %q, want %q", got, want)
+	}
+}
+
+// A rich_text message's links come from its own text, unchanged by
+// MessageLinks reading its body row through MessageTextSource.
+func TestMessageLinks_RichTextLinksUnchanged(t *testing.T) {
+	msg := MessageItem{
+		Text: "see the docs",
+		Blocks: []blockkit.Block{
+			blockkit.RichTextBlock{
+				Elements: []slack.RichTextElement{
+					&slack.RichTextSection{
+						Type: slack.RTESection,
+						Elements: []slack.RichTextSectionElement{
+							&slack.RichTextSectionLinkElement{Type: slack.RTSELink, URL: "https://example.com/a", Text: "see"},
+						},
+					},
+				},
+			},
+		},
+	}
+	links := MessageLinks(msg)
+	if len(links) != 1 || links[0].URL != "https://example.com/a" {
+		t.Errorf("MessageLinks = %+v, want the single rich_text link", links)
+	}
+}
+
+// A genuinely empty message (no text, no attachments) stays empty.
+func TestMessageCopyText_GenuinelyEmptyStaysEmpty(t *testing.T) {
+	msg := MessageItem{UserName: "alice"}
+	if got := MessageCopyText(msg); got != "" {
+		t.Errorf("MessageCopyText = %q, want empty", got)
+	}
+}
+
+// Slack's newer link-unfurl shape carries its content in the
+// attachment's Blocks (a rich_text block), with Text/Title empty --
+// the same reconstruction MessageTextSource already does for a
+// top-level rich_text block, just one level down.
+func TestMessageCopyText_FallsBackToLegacyAttachmentBlocks(t *testing.T) {
+	msg := MessageItem{
+		UserName: "alice",
+		LegacyAttachments: []blockkit.LegacyAttachment{{
+			Blocks: []blockkit.Block{
+				blockkit.RichTextBlock{
+					Elements: []slack.RichTextElement{
+						&slack.RichTextSection{
+							Type: slack.RTESection,
+							Elements: []slack.RichTextSectionElement{
+								&slack.RichTextSectionTextElement{Type: slack.RTSEText, Text: "unfurled content"},
+							},
+						},
+					},
+				},
+			},
+		}},
+	}
+	if got := MessageCopyText(msg); got != "unfurled content" {
+		t.Errorf("MessageCopyText = %q, want the reconstructed rich_text block", got)
+	}
+}
+
+// With neither Text nor a usable rich_text block, Title is the last
+// resort rather than reporting the message as textless.
+func TestMessageCopyText_FallsBackToLegacyAttachmentTitle(t *testing.T) {
+	msg := MessageItem{
+		UserName: "alice",
+		LegacyAttachments: []blockkit.LegacyAttachment{
+			{Title: "Example Site"},
+		},
+	}
+	if got := MessageCopyText(msg); got != "Example Site" {
+		t.Errorf("MessageCopyText = %q, want the attachment's Title", got)
+	}
+}
+
+// With multiple attachments, the first one carrying any extractable
+// text wins -- there's no field distinguishing "the forward" from an
+// unrelated unfurl to prefer instead.
+func TestMessageCopyText_MultipleAttachmentsFirstWins(t *testing.T) {
+	msg := MessageItem{
+		UserName: "alice",
+		LegacyAttachments: []blockkit.LegacyAttachment{
+			{Text: "first attachment"},
+			{Text: "second attachment"},
+		},
+	}
+	if got := MessageCopyText(msg); got != "first attachment" {
+		t.Errorf("MessageCopyText = %q, want the first attachment's text", got)
+	}
+}
+
 func TestMessagePaneViewUpdatesAuthorStatus(t *testing.T) {
 	m := New([]MessageItem{{
 		UserID: "U1", UserName: "alice", Text: "Hello", Timestamp: "10:30 AM",
@@ -57,6 +196,87 @@ func TestMessagePaneViewUpdatesAuthorStatus(t *testing.T) {
 	m.PatchUserStatus("U1", peerstatus.Status{Huddle: peerstatus.HuddleActive})
 	if got := ansi.Strip(m.View(20, 60)); !strings.Contains(got, "alice "+peerstatus.HuddleGlyph) {
 		t.Fatalf("message header does not replace the status with the huddle glyph:\n%s", got)
+	}
+}
+
+// channel_join must render as a muted notice, not a normal chat
+// bubble under the system bot's name, and the @mention in its text
+// must still resolve.
+func TestChannelJoinRendersAsSystemNotice(t *testing.T) {
+	m := New([]MessageItem{{
+		UserID:    "USLACKBOT",
+		UserName:  "Slackbot",
+		Text:      "<@U2> has joined the channel",
+		Timestamp: "10:30 AM",
+		Subtype:   "channel_join",
+	}}, "general")
+	m.SetUserNames(map[string]string{"U2": "alice"})
+
+	got := ansi.Strip(m.View(20, 60))
+	if strings.Contains(got, "Slackbot") {
+		t.Errorf("channel_join message shows the system bot's display name instead of a muted notice:\n%s", got)
+	}
+	if !strings.Contains(got, "alice") {
+		t.Errorf("channel_join message text should still resolve the @mention to a display name:\n%s", got)
+	}
+	if !strings.Contains(got, "has joined the channel") {
+		t.Errorf("channel_join message body missing from render:\n%s", got)
+	}
+}
+
+// The notice's mention/link handling re-applies TextPrimary after its
+// own color, which -- unstripped -- would un-mute everything past the
+// first @mention. Every channel_join/leave message starts with one.
+func TestChannelJoinNoticeStaysMutedThroughMention(t *testing.T) {
+	m := New(nil, "general")
+	m.SetUserNames(map[string]string{"U2": "alice"})
+	msg := MessageItem{
+		UserID:    "USLACKBOT",
+		UserName:  "Slackbot",
+		Text:      "<@U2> has joined the channel",
+		Timestamp: "10:30 AM",
+		Subtype:   "channel_join",
+	}
+
+	content := RenderMessage(msg, 60, &RenderContext{UserNames: m.userNames, ChannelNames: m.channelNames}, RenderOptions{}).Content
+	plain := ansi.Strip(content)
+	if want := DividerStyle(59).Render(strings.TrimSpace(plain)); content != want {
+		t.Errorf("notice is not uniformly muted-styled:\nraw:  %q\nwant: %q", content, want)
+	}
+}
+
+func TestCanOpenThread(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  MessageItem
+		want bool
+	}{
+		{"normal", MessageItem{TS: "1.0"}, true},
+		{"notice no replies", MessageItem{Subtype: "channel_join"}, false},
+		{"huddle no replies", MessageItem{Subtype: "huddle_thread"}, false},
+		{"huddle with replies", MessageItem{Subtype: "huddle_thread", ReplyCount: 1}, true},
+	}
+	for _, c := range cases {
+		if got := CanOpenThread(c.msg); got != c.want {
+			t.Errorf("%s: CanOpenThread = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestIsSystemNoticeSubtype(t *testing.T) {
+	cases := map[string]bool{
+		"channel_join":     true,
+		"channel_leave":    true,
+		"group_join":       true,
+		"group_leave":      true,
+		"":                 false,
+		"bot_message":      false,
+		"thread_broadcast": false,
+	}
+	for subtype, want := range cases {
+		if got := IsSystemNoticeSubtype(subtype); got != want {
+			t.Errorf("IsSystemNoticeSubtype(%q) = %v, want %v", subtype, got, want)
+		}
 	}
 }
 
@@ -1045,6 +1265,25 @@ func TestModel_HandleAvatarReady_EmptyUserIDNoOp(t *testing.T) {
 	m.HandleAvatarReady("")
 	if m.Version() != beforeVersion {
 		t.Error("HandleAvatarReady(\"\") should not dirty the version")
+	}
+}
+
+// A huddle with replies is drawn as its starter's message, so the starter's
+// avatar arriving must repaint it even though the stored author is Slackbot.
+func TestModel_HandleAvatarReady_MarksHuddleStarterEntry(t *testing.T) {
+	msgs := []MessageItem{
+		{TS: "1700000001.000000", UserID: "USLACKBOT", UserName: "Slackbot", Subtype: "huddle_thread", ReplyCount: 1,
+			HuddleRoom: &HuddleRoom{CreatedBy: "UFAKE0002"}, Timestamp: "10:30 AM"},
+		{TS: "1700000002.000000", UserID: "UFAKE0003", UserName: "carol", Text: "other", Timestamp: "10:31 AM"},
+	}
+	m := New(msgs, "C")
+	_ = m.View(20, 60)
+	m.HandleAvatarReady("UFAKE0002")
+	if _, ok := m.staleEntries["1700000001.000000"]; !ok {
+		t.Error("huddle starter's avatar must mark the huddle entry stale")
+	}
+	if _, ok := m.staleEntries["1700000002.000000"]; ok {
+		t.Error("an unrelated entry must not be marked stale")
 	}
 }
 

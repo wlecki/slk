@@ -422,12 +422,14 @@ type App struct {
 	// values pushed through the App-level Set* forwarders, kept so
 	// newWindowModel can configure late-created window models
 	// identically to the root model. See internal/ui/winmodels.go.
-	avatarFn     messages.AvatarFunc
-	imageCtx     imgrender.ImageContext
-	emojiCtx     messages.EmojiContext
-	emojiCustoms map[string]string
-	channelNames map[string]string
-	userGroups   map[string]string
+	avatarFn      messages.AvatarFunc
+	replyAvatarFn messages.AvatarFunc
+	replyAvatars  bool
+	imageCtx      imgrender.ImageContext
+	emojiCtx      messages.EmojiContext
+	emojiCustoms  map[string]string
+	channelNames  map[string]string
+	userGroups    map[string]string
 
 	// buildInfo is the build identity :version shows: version and short
 	// commit (version.Short). Set once at startup by main.
@@ -625,6 +627,11 @@ type App struct {
 	// first push for each team. Cleared only when slk exits — the
 	// stacks are session-only by design.
 	navHistory *navHistoryStore
+
+	// sidebarMouseResize enables dragging the sidebar's right border;
+	// sidebarResizeFrom is the width a drag started at, 0 when none is on.
+	sidebarMouseResize bool
+	sidebarResizeFrom  int
 
 	// settings persists the theme choice and sidebar width. Nil until wired.
 	settings       core.SettingsService
@@ -1111,6 +1118,7 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd, handled := dispatchReducers(a, msg,
 		a.presence,
 		a.preview,
+		reduceSidebarResize,
 		a.drag,
 		a.typing,
 		a.bootstrap,
@@ -1404,6 +1412,17 @@ const noProfileToast = "No profile for this message"
 // full profile under a 10s timeout.
 func (a *App) openUserProfile() tea.Cmd {
 	_, _, _, userID, _, ok := a.selectedMessageContext()
+	if ok {
+		// A huddle announcement is stored under Slackbot; the person to
+		// show is whoever started the huddle.
+		if p, _, focused := a.focusedContentPane(); focused {
+			if msg, sel := p.SelectedMessage(); sel {
+				if starter := messages.HuddleStarter(msg); starter != "" && msg.Subtype == "huddle_thread" {
+					userID = starter
+				}
+			}
+		}
+	}
 	if !ok || userID == "" || strings.HasPrefix(userID, "B") {
 		return toastWithClear(a, noProfileToast, 2*time.Second)
 	}
@@ -1505,7 +1524,7 @@ func (a *App) copyMessageOfSelected() tea.Cmd {
 		return nil
 	}
 
-	text := messages.MessageTextSource(msg)
+	text := messages.MessageCopyText(msg)
 	if text == "" {
 		return func() tea.Msg { return ToastMsg{Text: "Message has no text"} }
 	}
@@ -2091,15 +2110,24 @@ func (a *App) openThreadForSelectedMessage() tea.Cmd {
 	if cmd, blocked := ephemeralGuard(msg); blocked {
 		return cmd
 	}
+	if !messages.CanOpenThread(msg) {
+		return a.cantReplyToNotice()
+	}
 	// Use the message's own TS as the thread parent. If it's a thread
 	// reply (a thread_broadcast row in the channel feed), the selected
 	// row is NOT the parent: resolve the real parent from the pane
 	// buffer / thread cache via the permalink path, else the reply
 	// would render twice — once as the "parent" and once as a reply.
 	if msg.ThreadTS != "" && msg.ThreadTS != msg.TS {
-		return a.openThreadForPermalink(a.activeChannelID, msg.ThreadTS)
+		return a.openThreadForPermalink(a.activeChannelID, msg.ThreadTS, true)
 	}
 	return a.openThreadPanel(msg, a.activeChannelID, msg.TS)
+}
+
+// cantReplyToNotice is the toast for a refused thread-open on a
+// reply-less system notice.
+func (a *App) cantReplyToNotice() tea.Cmd {
+	return toastWithClear(a, "Can't reply to a system message", 2*time.Second)
 }
 
 // threadComposeChannelName resolves the display name for the thread's
@@ -2137,6 +2165,12 @@ func (a *App) applyThreadBreadcrumb(channelID, channelType string) {
 // by openThreadForSelectedMessage (parent taken from the pane buffer)
 // and openThreadForPermalink (parent reconstructed from cache/stub).
 func (a *App) openThreadPanel(parent messages.MessageItem, channelID, threadTS string) tea.Cmd {
+	// The one sink every opener (Enter, click, permalink, history, jump,
+	// search, notification) reaches: a reply-less system notice never
+	// gets a panel, and an open panel is left on its own thread.
+	if !messages.CanOpenThread(parent) {
+		return a.cantReplyToNotice()
+	}
 	if a.compose.Uploading() || a.threadCompose.Uploading() {
 		return toastWithClear(a, "Upload in progress", 2*time.Second)
 	}
@@ -2874,15 +2908,35 @@ func (a *App) SetChannelFinderItems(items []core.ChannelFinderItem) {
 
 // SetAvatarService wires the rendered avatars shown beside messages.
 func (a *App) SetAvatarService(s core.AvatarService) {
-	var fn messages.AvatarFunc
+	var fn, replyFn messages.AvatarFunc
 	if s != nil {
-		fn = s.Avatar
+		fn, replyFn = s.Avatar, s.ReplyAvatar
 	}
-	a.avatarFn = fn
+	a.avatarFn, a.replyAvatarFn = fn, replyFn
 	for _, m := range a.allWinModels() {
 		m.SetAvatarFunc(fn)
+		m.SetReplyAvatarFunc(a.replyAvatarFunc())
 	}
 	a.threadPanel.SetAvatarFunc(fn)
+}
+
+// SetReplyAvatars switches the reply row under thread parents to Slack's
+// look: the repliers' avatars, then "N replies" ([appearance]
+// reply_avatars). Needs the avatar service.
+func (a *App) SetReplyAvatars(enabled bool) {
+	a.replyAvatars = enabled
+	for _, m := range a.allWinModels() {
+		m.SetReplyAvatarFunc(a.replyAvatarFunc())
+	}
+}
+
+// replyAvatarFunc is the reply-row avatar source, nil when reply_avatars
+// is off or there is no avatar service.
+func (a *App) replyAvatarFunc() messages.AvatarFunc {
+	if !a.replyAvatars {
+		return nil
+	}
+	return a.replyAvatarFn
 }
 
 // SetColoredUsernames enables or disables deterministic per-user coloring
@@ -2892,6 +2946,12 @@ func (a *App) SetColoredUsernames(enabled bool) {
 		m.SetColoredUsernames(enabled)
 	}
 	a.threadPanel.SetColoredUsernames(enabled)
+}
+
+// SetThreadAvatars draws avatars in the thread panel too, when the avatar
+// service is set ([appearance] thread_avatars).
+func (a *App) SetThreadAvatars(enabled bool) {
+	a.threadPanel.SetShowAvatars(enabled)
 }
 
 // SetImageContext configures the inline-image rendering pipeline on the
@@ -3515,11 +3575,45 @@ func (a *App) SetMouseWheelLines(n int) {
 	a.mouseWheelLines = n
 }
 
+// SetMentionPills shows Slack's "Unread mentions" pills on the sidebar
+// edges ([sidebar] mention_pills).
+func (a *App) SetMentionPills(enabled bool) {
+	a.sidebar.SetMentionPills(enabled)
+}
+
 // SetSidebarStaleThreshold configures auto-hiding of inactive
 // channels in the sidebar. d is the maximum age (since LastReadTS)
 // before a channel is hidden; pass 0 to disable.
 func (a *App) SetSidebarStaleThreshold(d time.Duration) {
 	a.sidebar.SetStaleThreshold(d)
+}
+
+// SetRightAlignBadges puts the sidebar's mention badges at the right end
+// of their rows ([sidebar] right_align_badges).
+func (a *App) SetRightAlignBadges(enabled bool) {
+	a.sidebar.SetRightAlignBadges(enabled)
+}
+
+// SetChannelIndent indents the sidebar rows under each section header
+// ([sidebar] channel_indent).
+func (a *App) SetChannelIndent(n int) {
+	a.sidebar.SetChannelIndent(n)
+}
+
+// SidebarStyle is the [sidebar] look and behaviour switches.
+type SidebarStyle struct {
+	Slack        bool   // slack_style
+	PrivateGlyph string // private_glyph
+	ActiveOnly   bool   // active_only
+	MouseResize  bool   // mouse_resize
+}
+
+// SetSidebarStyle applies the [sidebar] switches.
+func (a *App) SetSidebarStyle(s SidebarStyle) {
+	a.sidebar.SetSlackStyle(s.Slack)
+	a.sidebar.SetPrivateGlyph(s.PrivateGlyph)
+	a.sidebar.SetActiveOnly(s.ActiveOnly)
+	a.sidebarMouseResize = s.MouseResize
 }
 
 // renderTypingLine returns the styled typing indicator for the current
@@ -4334,9 +4428,11 @@ func (a *App) markUnreadOfSelected() tea.Cmd {
 }
 
 // openImagePreviewOfSelected dispatches OpenImagePreviewMsg for the
-// first image attachment on the currently-selected message in the
-// focused pane (messages or thread). Returns nil if no message is
-// selected or the selected message has no image attachment.
+// first previewable image attachment on the currently-selected message in
+// the focused pane (messages or thread). An image Slack made no thumbnail
+// for (SVG) has nothing to preview, so it is downloaded and opened in the
+// system viewer instead, through DownloadFileMsg. Returns nil if no message
+// is selected or the selected message has no image attachment.
 func (a *App) openImagePreviewOfSelected() tea.Cmd {
 	channelID, ts, _, _, _, ok := a.selectedMessageContext()
 	if !ok {
@@ -4346,21 +4442,44 @@ func (a *App) openImagePreviewOfSelected() tea.Cmd {
 	if !found {
 		return nil
 	}
+	fallback := -1
 	for i, att := range msgItem.Attachments {
-		if att.Kind == "image" && att.FileID != "" {
-			channel := channelID
-			messageTS := ts
-			idx := i
-			return func() tea.Msg {
-				return messages.OpenImagePreviewMsg{
-					Channel: channel,
-					TS:      messageTS,
-					AttIdx:  idx,
-				}
+		if att.Kind != "image" || att.FileID == "" {
+			continue
+		}
+		if !hasPreviewThumb(att) {
+			if fallback < 0 && att.DownloadURL != "" {
+				fallback = i
+			}
+			continue
+		}
+		channel := channelID
+		messageTS := ts
+		idx := i
+		return func() tea.Msg {
+			return messages.OpenImagePreviewMsg{
+				Channel: channel,
+				TS:      messageTS,
+				AttIdx:  idx,
 			}
 		}
 	}
+	if fallback >= 0 {
+		att := msgItem.Attachments[fallback]
+		return func() tea.Msg { return DownloadFileMsg{Attachment: att} }
+	}
 	return nil
+}
+
+// hasPreviewThumb reports whether att has a thumbnail previewFetchCmd can
+// load.
+func hasPreviewThumb(att messages.Attachment) bool {
+	for _, t := range att.Thumbs {
+		if t.URL != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // submitEdit emits an EditMessageMsg if the edit text is non-empty.
