@@ -148,3 +148,29 @@ func TestDeactivatedDMStaysHiddenWhenUnread(t *testing.T) {
 		}
 	}
 }
+
+// With Slack style and Active only on, a deactivated person's DM with
+// recent unread activity stays hidden, including on the refilter that
+// Active only runs on every read-state change.
+func TestDeactivatedDMStaysHiddenWithActiveOnly(t *testing.T) {
+	readState := map[string]cache.ReadState{"D-gone": {HasUnread: true}}
+	m := New([]ChannelItem{
+		{ID: "C-general", Name: "general", Type: "channel"},
+		{ID: "D-gone", Name: "gone", Type: "dm", DMUserID: "U2"},
+	})
+	m.SetReadStateReader(func() map[string]cache.ReadState { return readState })
+	m.SetSlackStyle(true)
+	m.SetActiveOnly(true)
+	if got := visibleIDs(&m); !reflect.DeepEqual(got, []string{"C-general", "D-gone"}) {
+		t.Fatalf("fixture: visible = %v, want the DM shown before hiding", got)
+	}
+
+	m.SetDeactivatedUsers(map[string]bool{"U2": true})
+	if got := visibleIDs(&m); !reflect.DeepEqual(got, []string{"C-general"}) {
+		t.Fatalf("visible = %v, want the deactivated DM hidden", got)
+	}
+	m.Invalidate()
+	if got := visibleIDs(&m); !reflect.DeepEqual(got, []string{"C-general"}) {
+		t.Fatalf("visible after Invalidate = %v, want the deactivated DM hidden", got)
+	}
+}
