@@ -34,7 +34,7 @@ What slk does today, from the code and tests:
 
 Like the Slack desktop quick switcher: the person stays out of sight
 until you look for them on purpose. This only reaches conversations slk
-already has (an existing DM from `users.conversations`): the finder has
+already has (an open DM, see "Where the DM comes from"): the finder has
 no people search, so a former colleague you never had a DM with is not
 offered.
 
@@ -76,6 +76,38 @@ offered.
 
 Other surfaces (sidebar, `#` autocomplete, new-message picker, `@`
 roster) are unchanged.
+
+## Where the DM comes from
+
+The first build did not work for a real case. A DM with a deactivated
+person was not a finder row at all, so there was nothing to search.
+Checked against the workspace (read-only calls, flags only):
+
+- `users.conversations` (`GetChannels`) does not return that DM.
+- `client.userBoot` has it, open and not archived, in `ims` and in the
+  top-level `is_open` list.
+- `conversations.info` on it says `is_archived=false`, and also
+  `is_user_deleted=false`, so the deactivation is known from the
+  person's profile (`users.deleted`), not from the conversation.
+- `conversations.open` with the person's ID returns the same DM,
+  `already_open=true`.
+
+Of 20 open DMs userBoot had, 2 were missing from `users.conversations`.
+slk used userBoot's list only when `users.conversations` failed, and
+recovered only starred DMs from it.
+
+So `connectWorkspace` now adds every open, non-archived userBoot DM that
+`users.conversations` left out (`missingOpenIMs`, next to
+`bootConversations`, with the same rule, `bootIMOpen`). It runs before
+the starred recovery, which then sees those IDs as known. The DMs go
+through the usual pipeline (`buildChannelItem`, cache, name seeding), so
+they carry `DMUserID` and the rest of this design applies. No new
+requests: the userBoot result is already there.
+
+Side effect: an open DM with an active person that `users.conversations`
+leaves out now shows in the sidebar too, as it does in the desktop
+client. With the option off, an open DM with a deactivated person shows
+in the sidebar, like any other.
 
 ## Design
 
