@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/gammons/slk/internal/cache"
 	"github.com/gammons/slk/internal/core"
 )
 
@@ -126,5 +127,24 @@ func TestDeactivatedDMIsNotRenderedInSlackSections(t *testing.T) {
 	}
 	if !strings.Contains(view, "Alice") {
 		t.Fatalf("the other DM disappeared too:\n%s", view)
+	}
+}
+
+// A deactivated person's DM stays hidden when it has unread messages:
+// revealing hidden rows that turned unread is for rows hidden as stale,
+// not for rows hidden on purpose.
+func TestDeactivatedDMStaysHiddenWhenUnread(t *testing.T) {
+	readState := map[string]cache.ReadState{}
+	m := New([]ChannelItem{{ID: "C-general", Name: "general", Type: "channel"}})
+	m.SetReadStateReader(func() map[string]cache.ReadState { return readState })
+	m.UpsertItem(ChannelItem{ID: "D-gone", Name: "gone", Type: "dm", DMUserID: "U2"})
+	m.SetDeactivatedUsers(map[string]bool{"U2": true})
+
+	readState["D-gone"] = cache.ReadState{HasUnread: true}
+	m.Invalidate()
+	for _, it := range m.VisibleItems() {
+		if it.ID == "D-gone" {
+			t.Fatal("the deactivated DM came back after it turned unread")
+		}
 	}
 }

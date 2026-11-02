@@ -621,6 +621,11 @@ func (m *Model) revealUnreadHidden(state map[string]core.ReadState) bool {
 		if shown[i] || !state[item.ID].HasUnread {
 			continue
 		}
+		// A deactivated peer's DM is hidden on purpose, not as stale: an
+		// unread message (an old one, usually) does not bring it back.
+		if item.ID != m.activeID && core.IsHiddenPeerConversation(item.Type, item.DMUserID, m.deactivated) {
+			continue
+		}
 		if m.filter != "" && !strings.Contains(text.Fold(item.Name), lower) {
 			continue
 		}
