@@ -196,7 +196,8 @@ not met in a long while may only be hidden from `@` autocomplete once their
 profile is next fetched. Set the option to `false` to show everyone again.
 
 You can't send messages to a deactivated account, so the composer of such a DM
-is disabled, whether the option is on or off.
+is disabled and the forward picker never offers it, whether the option is on
+or off.
 
 ## Section resolution
 
