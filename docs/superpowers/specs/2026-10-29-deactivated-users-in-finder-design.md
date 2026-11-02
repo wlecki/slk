@@ -104,10 +104,20 @@ through the usual pipeline (`buildChannelItem`, cache, name seeding), so
 they carry `DMUserID` and the rest of this design applies. No new
 requests: the userBoot result is already there.
 
+The deactivated flag does not come with these DMs: a userBoot IM has no
+`is_user_deleted`, so `recordDeactivatedPeer` never fires for them. It
+comes from the person's profile, a cached `users.deleted` or the name
+resolution after connect (`resolveDMNames`, which sends
+`UserDeactivatedMsg`). With a cold cache the row can show for the moment
+before that answer. This is on purpose; do not add an `IsUserDeleted` to
+the boot IM to "fix" it, Slack does not send one.
+
 Side effect: an open DM with an active person that `users.conversations`
-leaves out now shows in the sidebar too, as it does in the desktop
-client. With the option off, an open DM with a deactivated person shows
-in the sidebar, like any other.
+leaves out is now a row too, as in the desktop client. In the sidebar it
+is still subject to the staleness filter, which hides a DM with no read
+state unless it is starred or in a section; the finder always has it.
+With the option off, an open DM with a deactivated person is a row like
+any other.
 
 ## Design
 

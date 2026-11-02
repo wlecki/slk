@@ -38,6 +38,8 @@ func TestMissingOpenIMs(t *testing.T) {
 }
 
 // The fallback and the recovery agree on which userBoot DMs are open.
+// They differ on one input on purpose: the recovery skips a DM with no
+// peer ID (D5), which the fallback keeps.
 func TestMissingOpenIMsMatchesTheFallback(t *testing.T) {
 	res := &bootstrap.Result{
 		IMs: []boot.IM{
@@ -45,12 +47,15 @@ func TestMissingOpenIMsMatchesTheFallback(t *testing.T) {
 			{ID: "D2", UserID: "U2"},
 			{ID: "D3", UserID: "U3"},
 			{ID: "D4", UserID: "U4", IsOpen: true, IsArchived: true},
+			{ID: "D5", IsOpen: true},
 		},
 		IsOpen: []string{"D3"},
 	}
 	var fallback, recovered []string
 	for _, ch := range bootConversations(res) {
-		fallback = append(fallback, ch.ID)
+		if ch.User != "" {
+			fallback = append(fallback, ch.ID)
+		}
 	}
 	for _, ch := range missingOpenIMs(nil, res) {
 		recovered = append(recovered, ch.ID)
