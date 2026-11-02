@@ -129,3 +129,26 @@ func deactivatedUsers(db *cache.DB) map[string]bool {
 	})
 	return set
 }
+
+// announceRevalidated reports what bootstrap revalidation changed in the
+// cache's deactivated set: before and after are db.DeactivatedUsers() read
+// around bootstrap.Run, nil when a read failed (then nothing is sent).
+// Revalidation writes users.deleted with no sender of its own, and a
+// workspace message only ever adds to the UI's set, so without this a user
+// reactivated while slk was off stays hidden when another workspace's
+// message hid them first.
+func announceRevalidated(send func(tea.Msg), before, after map[string]bool) {
+	if before == nil || after == nil {
+		return
+	}
+	for id := range before {
+		if !after[id] {
+			announceUserDeleted(send, id, true, false)
+		}
+	}
+	for id := range after {
+		if !before[id] {
+			announceUserDeleted(send, id, false, true)
+		}
+	}
+}

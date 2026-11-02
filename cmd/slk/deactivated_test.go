@@ -433,3 +433,32 @@ func TestADeactivatedProfileWithNoRowIsRemembered(t *testing.T) {
 		t.Fatal("a later active profile did not clear it")
 	}
 }
+
+// Bootstrap revalidation writes users.deleted with no sender of its own.
+// What it changed is announced from a before/after diff, so a user
+// reactivated while slk was off is shown again even when another
+// workspace's ready message already hid them.
+func TestAnnounceRevalidatedChanges(t *testing.T) {
+	isolateRememberedPeers(t)
+	rememberedPeers.Store("U1", struct{}{})
+	sender := &captureSender{}
+	announceRevalidated(sender.Send,
+		map[string]bool{"U1": true, "U2": true},
+		map[string]bool{"U2": true, "U3": true})
+	got := map[string]bool{}
+	for _, m := range deactivatedMsgs(sender.sent) {
+		got[m.UserID] = m.Deactivated
+	}
+	if len(got) != 2 || got["U1"] || !got["U3"] {
+		t.Fatalf("sent %+v, want U1 reactivated and U3 deactivated only", sender.sent)
+	}
+	if _, ok := rememberedPeers.Load("U1"); ok {
+		t.Fatal("the reactivated user is still remembered")
+	}
+	// A failed read on either side announces nothing.
+	sender.sent = nil
+	announceRevalidated(sender.Send, nil, map[string]bool{"U3": true})
+	if len(sender.sent) != 0 {
+		t.Fatalf("sent %+v with no before set", sender.sent)
+	}
+}
