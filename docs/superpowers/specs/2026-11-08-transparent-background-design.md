@@ -24,6 +24,8 @@ Transparent (base surfaces):
 - sidebar: `styles.SidebarBackground`, `messages.SidebarBgANSI()`
 - workspace rail: `styles.RailBackground`
 - status bar (today `SurfaceDark`): a new `styles.StatusBarBackground`
+- the startup splash around its box (today `SurfaceDark`): a new
+  `styles.SplashBackground`; the box itself has no fill
 - every fill painted with those colours: padding, gutters, spacer rows,
   scrollbar tracks, date dividers, the invisible left border of message rows
 
@@ -37,8 +39,7 @@ Solid (unchanged):
   channel finder, user profile, new message picker, reactions view, search
   results)
 - image frames and halfblock padding (`SurfaceDark` in `imgrender`,
-  `blockkit/image.go`, `blockkit/styles.go`), code blocks, the bootstrap
-  splash
+  `blockkit/image.go`, `blockkit/styles.go`), code blocks
 
 ## Design
 
@@ -61,6 +62,7 @@ colours to `lipgloss.NoColor{}`:
 | `styles.SidebarBackground` | `styles.ThemeSidebarBackground()` |
 | `styles.RailBackground` | (no maths user, none added) |
 | `styles.StatusBarBackground` (new; `SurfaceDark` when off) | `styles.SurfaceDark` |
+| `styles.SplashBackground` (new; `SurfaceDark` when off) | `styles.SurfaceDark` |
 
 The ~100 `.Background(styles.Background)` call sites need no edit: lipgloss
 emits no bg SGR for `NoColor`, and its padding spaces get the default

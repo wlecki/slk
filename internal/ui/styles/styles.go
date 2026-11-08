@@ -36,6 +36,11 @@ var (
 	// composer, popups and image frames, and those stay solid.
 	StatusBarBackground color.Color = lipgloss.Color("#0F0F23")
 
+	// SplashBackground fills the screen around the startup "Connecting
+	// to ..." box. Like StatusBarBackground it is SurfaceDark, or
+	// lipgloss.NoColor{} with the transparent background on.
+	SplashBackground color.Color = lipgloss.Color("#0F0F23")
+
 	// Selection highlight. Apply() either copies the theme's values or
 	// derives a sensible default (Primary as bg, Background as fg) so
 	// SelectionStyle() always produces visible highlight on any theme.

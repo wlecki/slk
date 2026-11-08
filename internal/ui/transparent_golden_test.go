@@ -276,3 +276,27 @@ func TestTransparentPopupsHaveNoHoles(t *testing.T) {
 		})
 	}
 }
+
+// The startup splash fills the screen around its box with
+// SplashBackground, so with the transparent background on it paints no
+// background at all, and with it off it paints SurfaceDark.
+func TestTransparentSplashHasNoFill(t *testing.T) {
+	pinRenderGlobals(t)
+	b := newWorkspaceBootstrap()
+	b.SetWorkspaces([]string{"Acme"})
+
+	off := b.Render(40, 10, "*")
+	if !strings.Contains(off, "48;") {
+		t.Fatal("with the option off the splash should paint a background")
+	}
+
+	a := newGoldenApp(t)
+	makeTransparent(t, a, "dark")
+	on := b.Render(40, 10, "*")
+	if strings.Contains(on, "48;") {
+		t.Errorf("transparent splash still paints a background:\n%q", on)
+	}
+	if !strings.Contains(on, "Connecting to Acme") {
+		t.Error("splash lost its text")
+	}
+}

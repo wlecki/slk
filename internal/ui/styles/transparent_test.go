@@ -80,6 +80,7 @@ func TestTransparentBackground_PaintColoursAreNoColor(t *testing.T) {
 		"SidebarBackground":   SidebarBackground,
 		"RailBackground":      RailBackground,
 		"StatusBarBackground": StatusBarBackground,
+		"SplashBackground":    SplashBackground,
 	} {
 		if !isNoColor(c) {
 			t.Errorf("%s = %v, want lipgloss.NoColor{}", name, c)
@@ -106,6 +107,9 @@ func TestTransparentBackground_OffKeepsThemeColours(t *testing.T) {
 	Apply("dark", config.Theme{})
 	if !colorEq(StatusBarBackground, SurfaceDark) {
 		t.Errorf("StatusBarBackground = %v, want SurfaceDark %v", StatusBarBackground, SurfaceDark)
+	}
+	if !colorEq(SplashBackground, SurfaceDark) {
+		t.Errorf("SplashBackground = %v, want SurfaceDark %v", SplashBackground, SurfaceDark)
 	}
 	if ThemeBackground() != Background || ThemeSidebarBackground() != SidebarBackground {
 		t.Error("Theme*() differ from the paint colours with the option off")

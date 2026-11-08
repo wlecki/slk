@@ -11,7 +11,8 @@ import (
 // Terminals only draw a cell see-through (window opacity, blur) when it
 // has the default background. Any explicit colour is solid. So with the
 // option on, Apply sets the colours the base surfaces are filled with
-// (Background, SidebarBackground, RailBackground, StatusBarBackground) to
+// (Background, SidebarBackground, RailBackground, StatusBarBackground,
+// SplashBackground) to
 // lipgloss.NoColor{}, which lipgloss renders as no background at all.
 //
 // Those variables are paint colours: fill with them. Anything that uses a
@@ -78,6 +79,7 @@ func applyTransparency() {
 	themeBackground = Background
 	themeSidebarBackground = SidebarBackground
 	StatusBarBackground = SurfaceDark
+	SplashBackground = SurfaceDark
 	applied = transparent
 	if !transparent {
 		return
@@ -86,4 +88,5 @@ func applyTransparency() {
 	SidebarBackground = lipgloss.NoColor{}
 	RailBackground = lipgloss.NoColor{}
 	StatusBarBackground = lipgloss.NoColor{}
+	SplashBackground = lipgloss.NoColor{}
 }
