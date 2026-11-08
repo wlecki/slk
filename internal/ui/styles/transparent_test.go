@@ -150,10 +150,15 @@ func TestTransparentBackground_SurvivesThemeSwitchAndReload(t *testing.T) {
 
 func TestInvisibleLeftBorder(t *testing.T) {
 	SetTransparentBackground(false)
+	Apply("dark", config.Theme{})
 	if got := InvisibleLeftBorder().Left; got != "▌" {
 		t.Errorf("opaque border = %q, want ▌", got)
 	}
 	withTransparent(t)
+	if got := InvisibleLeftBorder().Left; got != "▌" {
+		t.Errorf("border before Apply = %q, want ▌: the switch takes effect on Apply", got)
+	}
+	Apply("dark", config.Theme{})
 	if got := InvisibleLeftBorder().Left; got != " " {
 		t.Errorf("transparent border = %q, want a space", got)
 	}

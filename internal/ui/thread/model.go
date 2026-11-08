@@ -1158,6 +1158,13 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 		if !m.list.HasSelection() {
 			parentContent = messages.SelectedHeader(parentContent, parentHeader, m.parent.TS, m.parent.Timestamp, parentHeaderBudget)
 		}
+		if styles.TransparentBackground() {
+			// The parent's spans restore BgANSI after each reset, which is
+			// the default background here: a hole in the tint. The opaque
+			// row has the same gap (theme background), left as it is so
+			// the off path stays unchanged.
+			parentContent = messages.RepaintBgToSelectionTint(parentContent, m.focused)
+		}
 		parentContent = lipgloss.NewStyle().BorderStyle(thickLeftBorder).BorderLeft(true).
 			BorderForeground(styles.SelectionBorderColor(m.focused)).
 			BorderBackground(styles.SelectionTintColor(m.focused)).

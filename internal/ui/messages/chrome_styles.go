@@ -45,5 +45,17 @@ func ChromeStyles() chrome.Styles {
 		Thumb:       on().Foreground(styles.Primary),
 		Track:       on().Foreground(styles.Border),
 		BaseANSI:    SolidBgANSI() + FgANSI(),
+		PopupANSI:   popupANSI(),
 	}
+}
+
+// popupANSI keeps the composer popups solid with the transparent
+// background on: the composer area re-asserts BgANSI after resets, and
+// that is the default background then, so the popup re-asserts its own
+// colour after it. Off, it's empty and the popups render as before.
+func popupANSI() string {
+	if !styles.TransparentBackground() {
+		return ""
+	}
+	return bgANSIFor(styles.SurfaceDark)
 }

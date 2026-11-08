@@ -20,7 +20,11 @@ import (
 // With the option off both give the same colour, so nothing changes.
 
 var (
+	// transparent is what SetTransparentBackground asked for; applied is
+	// what the last Apply did. Everything reads applied, so the paint
+	// colours, the accessors and the border glyph always agree.
 	transparent bool
+	applied     bool
 
 	// The theme's real base colours, kept by Apply while the paint
 	// colours are NoColor.
@@ -33,14 +37,15 @@ var (
 // custom theme reload) keeps it.
 func SetTransparentBackground(on bool) { transparent = on }
 
-// TransparentBackground reports whether the transparent background is on.
-func TransparentBackground() bool { return transparent }
+// TransparentBackground reports whether the last Apply made the base
+// surfaces transparent.
+func TransparentBackground() bool { return applied }
 
 // ThemeBackground is the theme's message-pane background colour, also
 // when the transparent background paints it as NoColor. Use it for maths
 // and for surfaces that stay solid, such as dialogs.
 func ThemeBackground() color.Color {
-	if transparent && themeBackground != nil {
+	if applied {
 		return themeBackground
 	}
 	return Background
@@ -48,7 +53,7 @@ func ThemeBackground() color.Color {
 
 // ThemeSidebarBackground is ThemeBackground for the sidebar.
 func ThemeSidebarBackground() color.Color {
-	if transparent && themeSidebarBackground != nil {
+	if applied {
 		return themeSidebarBackground
 	}
 	return SidebarBackground
@@ -60,7 +65,7 @@ func ThemeSidebarBackground() color.Color {
 // the background is a real colour, so with the transparent background
 // on it is a space instead.
 func InvisibleLeftBorder() lipgloss.Border {
-	if transparent {
+	if applied {
 		return lipgloss.Border{Left: " "}
 	}
 	return lipgloss.Border{Left: "▌"}
@@ -73,6 +78,7 @@ func applyTransparency() {
 	themeBackground = Background
 	themeSidebarBackground = SidebarBackground
 	StatusBarBackground = SurfaceDark
+	applied = transparent
 	if !transparent {
 		return
 	}

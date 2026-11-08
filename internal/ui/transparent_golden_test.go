@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gammons/slk/internal/config"
+	"github.com/gammons/slk/internal/ui/messages"
 	"github.com/gammons/slk/internal/ui/styles"
 )
 
@@ -26,7 +27,7 @@ func makeTransparent(t *testing.T, a *App, theme string) {
 // on, as transparent_<name>.
 var (
 	transparentGoldenScenarios = []string{"base", "thread_open", "thread_parent_selected", "drag_selection", "overlay_finder"}
-	transparentGoldenDialogs   = []string{"dialog_confirm", "dialog_channel_finder_scroll", "dialog_search_results"}
+	transparentGoldenDialogs   = []string{"dialog_confirm", "dialog_channel_finder_scroll", "dialog_search_results", "popup_mention", "popup_emoji", "popup_channel"}
 )
 
 func TestGolden_Transparent(t *testing.T) {
@@ -177,5 +178,101 @@ func TestTransparentFrameCheckSeesOpaqueFill(t *testing.T) {
 	}
 	if !statusSeen {
 		t.Error("opaque status bar does not paint surface_dark")
+	}
+}
+
+// The selected thread parent keeps its tint across the whole row: no
+// reset in its rows may fall back to the default background.
+func TestTransparentSelectedThreadParentHasNoHoles(t *testing.T) {
+	sc := goldenScenarioNamed(t, "thread_parent_selected")
+	a := sc.build(t)
+	makeTransparent(t, a, "dark")
+	frame := a.View().Content
+	tint := messages.SelectionTintBgANSI(a.threadPanel.Focused())
+	tinted := 0
+	for i, line := range strings.Split(frame, "\n") {
+		first := strings.Index(line, tint)
+		last := strings.LastIndex(line, tint)
+		if first < 0 {
+			continue
+		}
+		tinted++
+		// The pane re-asserts BgANSI after every reset; harmless when
+		// the tint comes straight after it.
+		span := strings.ReplaceAll(line[first:last+len(tint)], "\x1b[49m"+tint, tint)
+		if hole := strings.Index(span, "\x1b[49m"); hole >= 0 {
+			t.Errorf("row %d: the tint falls back to the default background: ...%q", i, span[hole:])
+		}
+	}
+	if tinted == 0 {
+		t.Fatal("no tinted row: the parent is not selected")
+	}
+}
+
+var cellTokRe = regexp.MustCompile("\x1b\\[([0-9;]*)m|\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)|(?s:(.))")
+
+// defaultBgCells counts the visible characters in s drawn on the default
+// background, walking the SGR state (s starts with a bg set).
+func defaultBgCells(s string) int {
+	set, n := true, 0
+	for _, m := range cellTokRe.FindAllStringSubmatchIndex(s, -1) {
+		if m[4] >= 0 { // a visible character
+			if !set {
+				n++
+			}
+			continue
+		}
+		if m[2] < 0 {
+			continue // OSC
+		}
+		p := strings.Split(s[m[2]:m[3]], ";")
+		for i := 0; i < len(p); i++ {
+			switch p[i] {
+			case "", "0", "49":
+				set = false
+			case "48":
+				set = true
+				fallthrough
+			case "38", "58":
+				if i+1 < len(p) && p[i+1] == "2" {
+					i += 4
+				} else {
+					i += 2
+				}
+			}
+		}
+	}
+	return n
+}
+
+// A composer popup is solid: between its first and last surface_dark
+// cell on a row, nothing is drawn on the default background.
+func TestTransparentPopupsHaveNoHoles(t *testing.T) {
+	dialogs := map[string]dialogGolden{}
+	for _, d := range dialogGoldens() {
+		dialogs[d.name] = d
+	}
+	for _, name := range []string{"popup_mention", "popup_emoji", "popup_channel"} {
+		t.Run(name, func(t *testing.T) {
+			d := dialogs[name]
+			a := newGoldenApp(t, goldenFixtureOpts()...)
+			makeTransparent(t, a, "dark")
+			d.open(t, a)
+			surface := "\x1b[48;2;15;15;35m" // dark's surface_dark
+			rows := 0
+			for i, line := range strings.Split(a.View().Content, "\n") {
+				first, last := strings.Index(line, surface), strings.LastIndex(line, surface)
+				if first < 0 {
+					continue
+				}
+				rows++
+				if n := defaultBgCells(line[first:last]); n > 0 {
+					t.Errorf("row %d: %d popup cells show the terminal background", i, n)
+				}
+			}
+			if rows == 0 {
+				t.Fatal("no popup row found")
+			}
+		})
 	}
 }

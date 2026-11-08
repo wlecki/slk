@@ -110,6 +110,20 @@ all (lipgloss emits none for `NoColor`), so a swap is not enough:
 Neither path is reachable with the switch off: `49` only matches when the
 base escape is `ESC[49m`, and step 2 is gated on the switch.
 
+The thread parent and the threads-view card build their selected row
+outside `WrapRows`. With the switch on they get the same repaint (and the
+threads-view header the tint after every reset). Their opaque rows have
+the same gap, filled with the theme background, and stay as they are so
+the off path doesn't change; fixing that is a separate change.
+
+### Composer popups
+
+The popups sit in the composer area, which re-asserts `BgANSI()` after
+every reset. With the switch on that is the default background, so the
+popup rows would get holes. `chrome.Styles.PopupANSI` (the `SurfaceDark`
+escape, set by `ChromeStyles` only when transparent) is re-asserted after
+every reset inside `chrome.Popup`, after the composer's own escape.
+
 ### Invisible left border
 
 Message rows (`wrap_rows.go`, the thread parent, `activityview`,
@@ -155,6 +169,8 @@ opacity setting does the actual transparency.
   are unique: none of `Background`, `SidebarBackground`, `RailBackground`
   appears as a bg SGR anywhere, and `SurfaceDark` does not appear on the
   status bar row.
+- No holes in surfaces that stay solid: the composer popups and the
+  selected thread parent and threads-view card.
 - Unit tests: `bgANSIFor(NoColor)`, the `49` tokenizer case, the transparent
   selected variant (tint reaches every cell after a reset), the derived
   colours being equal on and off, the invisible border glyph, the switch
