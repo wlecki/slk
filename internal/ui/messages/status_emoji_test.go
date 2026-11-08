@@ -107,17 +107,20 @@ func TestAuthorStatus_SelectedRowKeepsTheImage(t *testing.T) {
 	}
 }
 
-// A custom status emoji shows the generic glyph until the workspace's
-// custom emoji arrive, then its artwork.
+// A custom status emoji shows the generic glyph (drawn through the image
+// path, like every status emoji) until the workspace's custom emoji
+// arrive, then its artwork.
 func TestAuthorStatus_CustomEmojiAfterSetEmojiCustoms(t *testing.T) {
 	statusEmojiImages(t)
 	customs := map[string]string{"company-logo": "https://emoji.slack-edge.com/T1/company-logo/abc.png"}
 	f := newFakePlaceFetcher()
 	placement := serveStatusEmoji(t, f, "company-logo", customs, "53", "")
 
+	fallback := serveStatusEmoji(t, f, "speech_balloon", nil, "56", "")
+
 	m := statusPane(peerstatus.Status{Emoji: ":company-logo:"}, f)
-	if out := m.View(20, 80); !strings.Contains(out, peerstatus.FallbackGlyph) {
-		t.Fatalf("before customs load the header should draw the fallback glyph:\n%q", out)
+	if out := m.View(20, 80); !strings.Contains(out, fallback) || strings.Contains(out, placement) {
+		t.Fatalf("before customs load the header should draw the fallback image, not the custom artwork:\n%q", out)
 	}
 	m.SetEmojiCustoms(customs)
 	if out := m.View(20, 80); !strings.Contains(out, placement) {
@@ -125,29 +128,35 @@ func TestAuthorStatus_CustomEmojiAfterSetEmojiCustoms(t *testing.T) {
 	}
 }
 
-func TestAuthorStatus(t *testing.T) {
+func TestAuthorStatusEmoji(t *testing.T) {
 	now := time.Unix(1700000000, 0)
-	glyphSuffix := func(st peerstatus.Status) string {
-		return AuthorStatusSuffix(map[string]peerstatus.Status{"U1": st}, "U1", now)
+	statusOf := func(st peerstatus.Status) map[string]peerstatus.Status {
+		return map[string]peerstatus.Status{"U1": st}
 	}
-	bg := lipgloss.NewStyle().Background(styles.Background)
+	// call returns the emoji, whether it is an image, and how many
+	// uploads it queued on the body's collector.
+	call := func(statuses map[string]peerstatus.Status, f emojiutil.PlaceFetcher) (string, bool, int) {
+		var flushes []func(io.Writer) error
+		opts := &RenderSlackMarkdownOpts{PlaceCtx: emojiutil.PlaceContext{Fetcher: f}, EmojiCells: 2, EmojiFlushes: &flushes}
+		got, image := authorStatusEmoji(statuses, "U1", now, opts)
+		return got, image, len(flushes)
+	}
 
-	t.Run("image mode off is AuthorStatusSuffix", func(t *testing.T) {
+	t.Run("image mode off is the glyph", func(t *testing.T) {
 		f := newFakePlaceFetcher()
 		serveStatusEmoji(t, f, "calendar", nil, "54", "")
 		for _, st := range []peerstatus.Status{{Emoji: ":calendar:"}, {Huddle: peerstatus.HuddleActive}, {Text: "Lunch"}, {}} {
-			got, flush := AuthorStatus(map[string]peerstatus.Status{"U1": st}, "U1", now, EmojiContext{PlaceCtx: emojiutil.PlaceContext{Fetcher: f}, Cells: 2})
-			if got != glyphSuffix(st) || flush != nil {
-				t.Errorf("%+v: AuthorStatus = %q (flush %v), want %q", st, got, flush != nil, glyphSuffix(st))
+			if got, image, n := call(statusOf(st), f); got != st.Glyph(now) || image || n != 0 {
+				t.Errorf("%+v: authorStatusEmoji = %q (image %v, %d uploads), want %q", st, got, image, n, st.Glyph(now))
 			}
 		}
 	})
 
-	t.Run("no fetcher is AuthorStatusSuffix", func(t *testing.T) {
+	t.Run("no fetcher is the glyph", func(t *testing.T) {
 		statusEmojiImages(t)
 		st := peerstatus.Status{Emoji: ":calendar:"}
-		if got, _ := AuthorStatus(map[string]peerstatus.Status{"U1": st}, "U1", now, EmojiContext{}); got != glyphSuffix(st) {
-			t.Errorf("AuthorStatus = %q, want %q", got, glyphSuffix(st))
+		if got, image, _ := call(statusOf(st), nil); got != st.Glyph(now) || image {
+			t.Errorf("authorStatusEmoji = %q (image %v), want %q", got, image, st.Glyph(now))
 		}
 	})
 
@@ -155,31 +164,65 @@ func TestAuthorStatus(t *testing.T) {
 		statusEmojiImages(t)
 		f := newFakePlaceFetcher()
 		placement := serveStatusEmoji(t, f, "headphones", nil, "55", "")
-		got, flush := AuthorStatus(map[string]peerstatus.Status{"U1": {Huddle: peerstatus.HuddleActive}}, "U1", now, EmojiContext{PlaceCtx: emojiutil.PlaceContext{Fetcher: f}, Cells: 2})
-		if want := bg.Render(" " + placement); got != want || flush == nil {
-			t.Errorf("AuthorStatus = %q (flush %v), want %q", got, flush != nil, want)
+		if got, image, n := call(statusOf(peerstatus.Status{Huddle: peerstatus.HuddleActive}), f); !strings.HasPrefix(got, placement) || !image || n == 0 {
+			t.Errorf("authorStatusEmoji = %q (image %v, %d uploads), want it to start with %q", got, image, n, placement)
 		}
 	})
 
 	t.Run("cold image reserves its cells", func(t *testing.T) {
 		statusEmojiImages(t)
 		f := newFakePlaceFetcher() // nothing warm: Place reserves blanks and fetches
-		got, flush := AuthorStatus(map[string]peerstatus.Status{"U1": {Emoji: ":hourglass_flowing_sand:"}}, "U1", now, EmojiContext{PlaceCtx: emojiutil.PlaceContext{Fetcher: f}, Cells: 2})
-		if want := bg.Render("   "); got != want || flush != nil {
-			t.Errorf("AuthorStatus = %q (flush %v), want %q", got, flush != nil, want)
-		}
-		if w := lipgloss.Width(got); w != 1+2 {
-			t.Errorf("cold suffix is %d cells, want 3", w)
+		if got, image, n := call(statusOf(peerstatus.Status{Emoji: ":hourglass_flowing_sand:"}), f); got != "  " || !image || n != 0 {
+			t.Errorf("authorStatusEmoji = %q (image %v, %d uploads), want two reserved cells", got, image, n)
 		}
 	})
 
 	t.Run("no status", func(t *testing.T) {
 		statusEmojiImages(t)
-		f := newFakePlaceFetcher()
-		if got, flush := AuthorStatus(nil, "U1", now, EmojiContext{PlaceCtx: emojiutil.PlaceContext{Fetcher: f}}); got != "" || flush != nil {
-			t.Errorf("AuthorStatus = %q (flush %v), want empty", got, flush != nil)
+		if got, image, n := call(nil, newFakePlaceFetcher()); got != "" || image || n != 0 {
+			t.Errorf("authorStatusEmoji = %q (image %v, %d uploads), want empty", got, image, n)
 		}
 	})
+}
+
+// A header too wide for its pane wraps. The status emoji wraps as one
+// unit, like the timestamp: a cold image's reserved cells survive the
+// wrap, so the header has the same shape cold and warm. Here the second
+// line holds 25 cells of name, the image and its space 3 more: the
+// timestamp (10 with its gap) no longer fits after them in the 36-cell
+// budget, warm or cold.
+func TestAuthorStatus_WrappedHeaderKeepsTheImageCells(t *testing.T) {
+	statusEmojiImages(t)
+	long := strings.Repeat("alice", 6) + " " + strings.Repeat("smith", 5)
+	render := func(f *fakePlaceFetcher) string {
+		m := New([]MessageItem{{TS: "1700000000.000100", UserID: "U1", UserName: long, Text: "hello", Timestamp: "10:00 AM"}}, "general")
+		m.SetUserStatuses(map[string]peerstatus.Status{"U1": {Emoji: ":calendar:"}})
+		m.SetEmojiContext(EmojiContext{PlaceCtx: emojiutil.PlaceContext{Fetcher: f}, Cells: 2})
+		return m.View(20, 40)
+	}
+	lineOf := func(view, s string) int {
+		for i, l := range strings.Split(view, "\n") {
+			if strings.Contains(ansi.Strip(l), s) {
+				return i
+			}
+		}
+		t.Fatalf("%q not drawn:\n%s", s, view)
+		return -1
+	}
+
+	f := newFakePlaceFetcher()
+	cold := render(f)
+	placement := serveStatusEmoji(t, f, "calendar", nil, "57", "")
+	warm := render(f)
+	if !strings.Contains(warm, placement) {
+		t.Fatalf("warm header has no image:\n%q", warm)
+	}
+	if lineOf(warm, "10:00 AM") == lineOf(warm, "smith") {
+		t.Fatalf("precondition: the warm timestamp wraps under the name:\n%s", warm)
+	}
+	if lineOf(cold, "10:00 AM") != lineOf(warm, "10:00 AM") {
+		t.Errorf("the timestamp moved when the image landed: the cold reservation was lost in the wrap\ncold:\n%s\nwarm:\n%s", cold, warm)
+	}
 }
 
 func dmHeaderPane(f *fakePlaceFetcher) *Model {
@@ -237,6 +280,40 @@ func TestDMTopic_ColdReservationKept(t *testing.T) {
 	topicLine := strings.Split(m.chromeCache, "\n")[1]
 	if got := ansi.Strip(topicLine); !strings.HasPrefix(got, "  ") || strings.TrimSpace(got) != "" {
 		t.Errorf("cold topic = %q, want a 2-cell blank reservation", got)
+	}
+}
+
+// A status text too long for the pane wraps the topic. The images stay
+// as wide through the wrap as they are drawn: the cold header is the
+// warm one with blanks where the images are, so nothing moves when they
+// land, and every chrome line keeps the pane width.
+func TestDMTopic_WrappedTopicKeepsTheImageCells(t *testing.T) {
+	statusEmojiImages(t)
+	st := peerstatus.Status{Emoji: ":calendar:", Text: "abcdefghijklmnopqrs", Huddle: peerstatus.HuddleActive}
+	render := func(f *fakePlaceFetcher) *Model {
+		m := dmHeaderPane(f)
+		m.SetDMTopic(st, dmTopicNow, "15:04")
+		_ = m.View(10, 20)
+		return m
+	}
+	f := newFakePlaceFetcher()
+	cold := render(f)
+	huddle := serveStatusEmoji(t, f, "headphones", nil, "83", "")
+	cal := serveStatusEmoji(t, f, "calendar", nil, "84", "")
+	warm := render(f)
+	if !strings.Contains(warm.chromeCache, huddle) || !strings.Contains(warm.chromeCache, cal) {
+		t.Fatalf("warm topic has no images:\n%q", warm.chromeCache)
+	}
+	blanked := strings.NewReplacer(huddle, "  ", cal, "  ").Replace(warm.chromeCache)
+	if c, w := ansi.Strip(cold.chromeCache), ansi.Strip(blanked); c != w {
+		t.Errorf("cold header is not the warm one with blank images:\ncold:\n%s\nwarm:\n%s", c, w)
+	}
+	for name, m := range map[string]*Model{"cold": cold, "warm": warm} {
+		for i, l := range strings.Split(m.chromeCache, "\n") {
+			if w := lipgloss.Width(l); w != 20 {
+				t.Errorf("%s: chrome line %d is %d cells, want 20: %q", name, i, w, l)
+			}
+		}
 	}
 }
 
@@ -300,5 +377,18 @@ func TestDMTopic_ImageModeOffIsThePlainTopic(t *testing.T) {
 	m.SetChannelTopic("Release day")
 	if got := m.View(10, 80); strings.Contains(got, "\U0010EEEE") {
 		t.Errorf("plain topic drew an image:\n%q", got)
+	}
+}
+
+// Without images the status glyph wraps with the name as it always
+// has: an overlong name and glyph reflow together, whitespace
+// normalized, so the glyph stays on the name's line.
+func TestAuthorStatus_GlyphWrapsWithTheName(t *testing.T) {
+	name := "Alexandria  Montgomery-Christensen"
+	m := New([]MessageItem{{TS: "1700000000.000100", UserID: "U1", UserName: name, Text: "hello", Timestamp: "10:00 AM"}}, "general")
+	m.SetUserStatuses(map[string]peerstatus.Status{"U1": {Emoji: ":calendar:"}})
+	out := ansi.Strip(m.View(20, 40))
+	if !strings.Contains(out, "Alexandria Montgomery-Christensen 📆") {
+		t.Errorf("glyph not wrapped with the name:\n%s", out)
 	}
 }

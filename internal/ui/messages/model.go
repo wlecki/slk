@@ -612,31 +612,52 @@ func (m *Model) SetDMTopic(st peerstatus.Status, now time.Time, layout string) {
 // there is no DM status or none of its emoji could be placed: the
 // caller then draws channelTopic.
 //
+// The topic holds a stand-in for each image (see imageSlot), and
+// images holds what replaces them, in order, once the topic is wrapped.
+//
 // Each placement ends by resetting the foreground ("\x1b[39m"), and
 // the status text after it is drawn in the topic's styles.Timestamp,
 // so its foreground is re-asserted after every placement.
-func (m *Model) topicWithImages() (string, []func(io.Writer) error, bool) {
+func (m *Model) topicWithImages() (topic string, images []string, flushes []func(io.Writer) error, ok bool) {
 	if m.dmTopic == (dmTopic{}) || m.channelTopic == "" {
-		return "", nil, false
+		return "", nil, nil, false
 	}
-	var flushes []func(io.Writer) error
-	placed := false
 	restore := bubblesansi.ForegroundSGR(styles.Timestamp.GetForeground())
-	topic := m.dmTopic.status.SummaryWith(m.dmTopic.now, m.dmTopic.layout, func(shortcode, glyph string) string {
+	slot := imageSlot(m.emojiCtx.ImageCells())
+	topic = m.dmTopic.status.SummaryWith(m.dmTopic.now, m.dmTopic.layout, func(shortcode, glyph string) string {
 		p, flush, ok := m.emojiCtx.PlaceShortcode(shortcode)
 		if !ok {
 			return glyph
 		}
-		placed = true
+		images = append(images, p+restore)
 		if flush != nil {
 			flushes = append(flushes, flush)
 		}
-		return p + restore
+		return slot
 	})
-	if !placed {
-		return "", nil, false
+	if len(images) == 0 {
+		return "", nil, nil, false
 	}
-	return topic, flushes, true
+	return topic, images, flushes, true
+}
+
+// imageSlot stands in for an emoji image `cells` wide while text around
+// it wraps. A cold image is blank cells, which WordWrap would fold into
+// the spaces around it (and the line would move when the image lands);
+// the stand-in is one word as wide as the image. Its rune is from the
+// same private plane as the kitty placeholder, so measures like it, and
+// is not one Slack text carries.
+func imageSlot(cells int) string {
+	return strings.Repeat("\U0010EEED", cells)
+}
+
+// fillImageSlots replaces each imageSlot in s with the next of images.
+func fillImageSlots(s string, cells int, images []string) string {
+	slot := imageSlot(cells)
+	for _, img := range images {
+		s = strings.Replace(s, slot, img, 1)
+	}
+	return s
 }
 
 // SetChannelType sets the channel type used to pick the header glyph
@@ -1376,27 +1397,43 @@ func (m *Model) hasAuthor(userID string) bool {
 // AuthorStatusSuffix is what follows an author's name in a message
 // header: a space and their status emoji on the pane background, or ""
 // when they have no live custom status. Shared with the thread pane.
-// AuthorStatus is the same with the emoji drawn as an image.
-func AuthorStatusSuffix(statuses map[string]peerstatus.Status, userID string, now time.Time) string {
-	g := statuses[userID].Glyph(now)
+// Emoji images use the same placement options and upload collector as the body.
+// Nil opts keeps glyph rendering, even when image mode is enabled.
+func AuthorStatusSuffix(statuses map[string]peerstatus.Status, userID string, now time.Time, opts *RenderSlackMarkdownOpts) string {
+	g, _ := authorStatusEmoji(statuses, userID, now, opts)
 	if g == "" {
 		return ""
 	}
 	return lipgloss.NewStyle().Background(styles.Background).Render(" " + g)
 }
 
-// AuthorStatus is AuthorStatusSuffix with the status emoji drawn as an
-// image when emoji can place it (image mode, custom emoji included),
-// plus the upload that image needs; else it is AuthorStatusSuffix and
-// a nil flush. Nothing follows the image in the suffix's style (the
-// header goes on with background-only spaces, then the timestamp's own
-// colour), so the placement's foreground reset needs no restoring.
-func AuthorStatus(statuses map[string]peerstatus.Status, userID string, now time.Time, emoji EmojiContext) (string, func(io.Writer) error) {
-	st := statuses[userID]
-	if placed, flush, ok := emoji.PlaceShortcode(st.GlyphShortcode(now)); ok {
-		return lipgloss.NewStyle().Background(styles.Background).Render(" " + placed), flush
+// authorStatusEmoji is AuthorStatusSuffix's emoji alone, and whether it
+// is an image (warm, or the cells a cold one reserves) rather than the
+// glyph. RenderMessage wraps an image as its own unit.
+func authorStatusEmoji(statuses map[string]peerstatus.Status, userID string, now time.Time, opts *RenderSlackMarkdownOpts) (string, bool) {
+	status := statuses[userID]
+	g := status.Glyph(now)
+	if g == "" {
+		return "", false
 	}
-	return AuthorStatusSuffix(statuses, userID, now), nil
+	if opts != nil && emojiutil.ImageModeActive() && opts.PlaceCtx.Fetcher != nil {
+		var tokens []emojiutil.Token
+		if !status.InHuddle(now) && status.Emoji != "" {
+			tokens = emojiutil.ResolveEmojiToTokens(status.Emoji, opts.Customs)
+		}
+		if len(tokens) != 1 || tokens[0].Kind != emojiutil.TokenEmoji {
+			// Keep the shared huddle, expiry and unknown-status policy,
+			// while drawing its fallback glyph through the image path too.
+			tokens = emojiutil.ResolveEmojiToTokens(g, opts.Customs)
+		} else {
+			// Preserve the status policy's glyph when its image cannot be placed.
+			tokens[0].Text = g
+		}
+		if placed := renderEmojiTokensInline(tokens, opts.PlaceCtx, opts.EmojiCells, opts.EmojiFlushes); placed != g {
+			return placed, true
+		}
+	}
+	return g, false
 }
 
 // SetChannelNames sets the channel ID -> name map used to resolve bare
@@ -2122,14 +2159,20 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 			topic := m.channelTopic
 			// A DM's emoji as images; their uploads fire with this
 			// build, which a fetch landing or custom emoji arriving
-			// redoes (HandleEmojiImageReady, SetEmojiCustoms).
-			if withImages, flushes, ok := m.topicWithImages(); ok {
+			// redoes (HandleEmojiImageReady, SetEmojiCustoms). The
+			// images go in after the wrap.
+			withImages, images, flushes, ok := m.topicWithImages()
+			if ok {
 				topic = withImages
 				for _, fl := range flushes {
 					_ = fl(imgpkg.KittyOutput)
 				}
 			}
-			header += "\n" + topicStyle.Render(WordWrap(topic, width))
+			rendered := topicStyle.Render(WordWrap(topic, width))
+			if ok {
+				rendered = fillImageSlots(rendered, m.emojiCtx.ImageCells(), images)
+			}
+			header += "\n" + rendered
 		}
 		m.chromeCache = header
 		m.chromeHeight = lipgloss.Height(m.chromeCache)
