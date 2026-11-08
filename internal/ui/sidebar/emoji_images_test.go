@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/gammons/slk/internal/cache"
 	"github.com/gammons/slk/internal/emoji"
 	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/ui/messages"
@@ -33,11 +34,23 @@ func newFakeEmojiFetcher() *fakeEmojiFetcher {
 	return &fakeEmojiFetcher{prerender: map[string]imgpkg.Render{}}
 }
 
-func (f *fakeEmojiFetcher) Prerendered(key string, _ goimage.Point, _ imgpkg.Protocol) (imgpkg.Render, bool) {
+// Prerendered answers for the footprint asked for: a 1-cell request
+// gets a 1-cell placement.
+func (f *fakeEmojiFetcher) Prerendered(key string, target goimage.Point, _ imgpkg.Protocol) (imgpkg.Render, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r, ok := f.prerender[key]
+	if ok && target.X == 1 {
+		r.Cells = goimage.Pt(1, 1)
+		r.Lines = []string{oneCellPlacement(r.Lines[0])}
+	}
 	return r, ok
+}
+
+// oneCellPlacement is a 2-cell placement from serve cut to its first
+// cell, ending in the same "\x1b[39m".
+func oneCellPlacement(p string) string {
+	return p[:strings.Index(p, "\U0010EEEE̅̍")] + "\x1b[39m"
 }
 
 func (f *fakeEmojiFetcher) Fetch(context.Context, imgpkg.FetchRequest) (imgpkg.FetchResult, error) {
@@ -65,7 +78,14 @@ func (f *fakeEmojiFetcher) serve(url string, id int, onFlush func(io.Writer) err
 // withEmojiImages turns image mode on for one test.
 func withEmojiImages(t *testing.T) {
 	t.Helper()
-	emoji.SetImageMode(true, 2)
+	withEmojiImageCells(t, 2)
+}
+
+// withEmojiImageCells turns image mode on for one test, with emoji
+// images the given number of cells wide.
+func withEmojiImageCells(t *testing.T, cells int) {
+	t.Helper()
+	emoji.SetImageMode(true, cells)
 	t.Cleanup(func() { emoji.SetImageMode(false, 2) })
 }
 
@@ -86,17 +106,6 @@ func mustEmojiURL(t *testing.T, name string, customs map[string]string) string {
 		t.Fatalf("precondition: :%s: has no URL", name)
 	}
 	return url
-}
-
-// sectionModel is a Slack-mode sidebar with one section "Docs" carrying
-// the given emoji shortcode, holding one channel.
-func sectionModel(emojiCode string) Model {
-	m := New([]ChannelItem{{ID: "C1", Name: "handbook", Type: "channel", Section: "S1"}})
-	m.SetSectionsProvider(&fakeProvider{
-		ready:    true,
-		sections: []SectionMeta{{ID: "S1", Name: "Docs", Emoji: emojiCode, Type: "standard"}},
-	})
-	return m
 }
 
 func emojiCtx(f emoji.PlaceFetcher) messages.EmojiContext {
@@ -157,13 +166,7 @@ func TestEmojiImages_SectionHeaderPlacesStandardEmoji(t *testing.T) {
 func TestEmojiImages_SelectedHeaderKeepsSelectedColours(t *testing.T) {
 	selectedHeader := func(m *Model) string {
 		t.Helper()
-		m.SetFocused(true)
-		for {
-			if _, ok := m.IsSectionHeaderSelected(); ok {
-				break
-			}
-			m.MoveDown()
-		}
+		selectHeader(t, m)
 		return rowFor(t, m.View(10, 30), "Docs")
 	}
 	selectedAttrs := messages.SidebarBgANSI() + messages.SidebarFgANSI()
@@ -194,6 +197,25 @@ func TestEmojiImages_ImageReadyIgnoredWithoutPlacements(t *testing.T) {
 	m.HandleEmojiImageReady("https://example.com/x.png")
 	if m.Version() != v {
 		t.Error("HandleEmojiImageReady rebuilt a sidebar that holds no emoji image")
+	}
+}
+
+// A warm image cannot change when a fetch lands (only new custom emoji
+// can change it, and SetEmojiCustoms rebuilds on its own), so a sidebar
+// whose images are all warm keeps its rows too.
+func TestEmojiImages_ImageReadyIgnoredWhenAllWarm(t *testing.T) {
+	withEmojiImages(t)
+	ff := newFakeEmojiFetcher()
+	placement := ff.serve(mustEmojiURL(t, "orange_book", nil), 42, nil)
+	m := sectionModel("orange_book")
+	m.SetEmojiContext(emojiCtx(ff))
+	if !strings.Contains(m.View(10, 30), placement) {
+		t.Fatal("precondition: the header draws the warm image")
+	}
+	v := m.Version()
+	m.HandleEmojiImageReady("https://example.com/x.png")
+	if m.Version() != v {
+		t.Error("HandleEmojiImageReady rebuilt a sidebar whose images are all warm")
 	}
 }
 
@@ -373,5 +395,157 @@ func TestEmojiImages_DMStatusImageNeverCutByTruncation(t *testing.T) {
 	}
 	if got, want := lipgloss.Width(row), lipgloss.Width(rowFor(t, glyphMode.View(10, 24), long[:5])); got != want {
 		t.Errorf("row is %d cells wide with the image, %d with the glyph", got, want)
+	}
+}
+
+// The image is charged its footprint and kept whole; the name is cut.
+func TestEmojiImages_HeaderImageKeptWholeNameTruncated(t *testing.T) {
+	withEmojiImages(t)
+	ff := newFakeEmojiFetcher()
+	placement := ff.serve(mustEmojiURL(t, "orange_book", nil), 42, nil)
+
+	m := longSectionModel("orange_book", cache.ReadState{})
+	m.SetEmojiContext(emojiCtx(ff))
+	view := m.View(20, 20)
+
+	row := rowFor(t, view, placement)
+	// 12 for the name minus the image's 2 cells and its space.
+	if !strings.Contains(row, placement+sectionHeaderFg()+" Engineer…") {
+		t.Errorf("header does not keep the whole image and truncate the name:\n%q", row)
+	}
+	if got := lineAfter(t, view, placement); got != "# handbook" {
+		t.Errorf("line after the header = %q, want the channel row: the header wrapped\n%s", got, view)
+	}
+	assertFits(t, view, placement, 20)
+}
+
+// A custom emoji section at the minimum width shows its name before the
+// customs load (the ":code:" text gives way), and image plus name after.
+func TestEmojiImages_CustomHeaderAtMinimumWidth(t *testing.T) {
+	withEmojiImages(t)
+	customs := map[string]string{"partyparrot": "https://emoji.slack-edge.com/T1/partyparrot/abc.gif"}
+	ff := newFakeEmojiFetcher()
+	placement := ff.serve(customs["partyparrot"], 43, nil)
+	m := sectionModel("partyparrot")
+	m.SetEmojiContext(emojiCtx(ff))
+	if got, want := headerFor(t, m.View(10, 20), "Docs"), "▾ Docs"; got != want {
+		t.Errorf("before customs load: header = %q, want %q", got, want)
+	}
+	m.SetEmojiCustoms(customs)
+	if row := rowFor(t, m.View(10, 20), "Docs"); !strings.Contains(row, placement+sectionHeaderFg()+" Docs") {
+		t.Errorf("after customs load the header should draw the image and the name:\n%q", row)
+	}
+}
+
+// Every header variant stays one line in image mode too: images 1 and
+// 2 cells wide, warm, cold, and not placed at all (no fetcher, so the
+// glyph or text is measured the way image mode measures it), normal and
+// selected, collapsed with the widest badge.
+func TestEmojiImages_EveryHeaderVariantOneLine(t *testing.T) {
+	customs := map[string]string{
+		"partyparrot":                           "https://emoji.slack-edge.com/T1/partyparrot/abc.gif",
+		"a_very_long_custom_party_parrot_emoji": "https://emoji.slack-edge.com/T1/long/abc.gif",
+	}
+	for _, cells := range []int{1, 2} {
+		withEmojiImageCells(t, cells)
+		for _, code := range []string{"orange_book", "partyparrot", "a_very_long_custom_party_parrot_emoji", "hammer_and_wrench"} {
+			for _, mode := range []string{"warm", "cold", "unplaced"} {
+				for _, selected := range []bool{false, true} {
+					for width := minWidth; width <= 40; width++ {
+						ff := newFakeEmojiFetcher()
+						if mode == "warm" {
+							if url, ok := emoji.URLForShortcode(code, customs); ok {
+								ff.serve(url, 70, nil)
+							}
+						}
+						ctx := messages.EmojiContext{PlaceCtx: emoji.PlaceContext{Fetcher: ff}, Cells: cells, Customs: customs}
+						if mode == "unplaced" {
+							ctx.PlaceCtx.Fetcher = nil
+						}
+						m := longSectionModel(code, cache.ReadState{HasUnread: true, MentionCount: 150})
+						m.SetEmojiContext(ctx)
+						m.ToggleCollapse("S1")
+						if selected {
+							selectHeader(t, &m)
+						}
+						view := m.View(12, width)
+						name := fmt.Sprintf("cells%d/%s/%s/s%v/w%d", cells, code, mode, selected, width)
+						t.Run(name, func(t *testing.T) { assertOneLinePerRow(t, view, 12, width) })
+					}
+				}
+			}
+		}
+	}
+}
+
+// With 1-cell images, emoji.Width counts an emoji as one cell. A status
+// glyph the row falls back to (the image could not be placed) is drawn
+// two cells wide, and is charged that: the row is drawn exactly as in
+// glyph mode. Charged one cell, the name would keep one more letter and
+// the row would eat the cell kept for an ambiguous-width cursor.
+func TestEmojiImages_DMStatusFallbackGlyphChargedFullWidth(t *testing.T) {
+	long := "abcdefghijklmnopqrstuvwxyz"
+	glyphMode := New([]ChannelItem{{ID: "D1", Name: long, Type: "dm", DMUserID: "U1"}})
+	glyphMode.UpdateStatusByUser("U1", ":calendar:", "", time.Time{})
+	want := rowFor(t, glyphMode.View(10, 24), long[:5])
+
+	withEmojiImageCells(t, 1)
+	m := New([]ChannelItem{{ID: "D1", Name: long, Type: "dm", DMUserID: "U1"}})
+	m.SetEmojiContext(messages.EmojiContext{Cells: 1})
+	m.UpdateStatusByUser("U1", ":calendar:", "", time.Time{})
+	view := m.View(10, 24)
+	assertOneLinePerRow(t, view, 10, 24)
+	if got := rowFor(t, view, long[:5]); got != want {
+		t.Errorf("row differs from glyph mode:\ngot  %q\nwant %q", got, want)
+	}
+}
+
+// A cold image reserves exactly the cells the warm one draws: the
+// sidebar with every image still loading is the warm sidebar with
+// blanks where the images are, for 1- and 2-cell images, every width,
+// collapsed with the widest badge, normal and selected, and a DM row
+// with a status.
+func TestEmojiImages_ColdIsWarmWithBlanks(t *testing.T) {
+	customs := map[string]string{"partyparrot": "https://emoji.slack-edge.com/T1/partyparrot/abc.gif"}
+	for _, cells := range []int{1, 2} {
+		withEmojiImageCells(t, cells)
+		for _, code := range []string{"orange_book", "partyparrot"} {
+			for _, selected := range []bool{false, true} {
+				for width := minWidth; width <= 40; width++ {
+					build := func(ff *fakeEmojiFetcher) string {
+						m := New([]ChannelItem{
+							{ID: "C1", Name: "handbook", Type: "channel", Section: "S1"},
+							{ID: "D1", Name: "alice-with-a-long-name", Type: "dm", DMUserID: "U1", Section: "S1",
+								Status: peerstatus.Status{Emoji: ":calendar:"}},
+						})
+						m.SetSectionsProvider(&fakeProvider{ready: true, sections: []SectionMeta{{ID: "S1", Name: longSectionName, Emoji: code, Type: "standard"}}})
+						m.SetReadStateReader(func() map[string]cache.ReadState {
+							return map[string]cache.ReadState{"C1": {HasUnread: true, MentionCount: 150}}
+						})
+						m.SetEmojiContext(messages.EmojiContext{PlaceCtx: emoji.PlaceContext{Fetcher: ff}, Cells: cells, Customs: customs})
+						if selected {
+							selectHeader(t, &m)
+						}
+						return m.View(12, width)
+					}
+					cold := build(newFakeEmojiFetcher())
+					ff := newFakeEmojiFetcher()
+					header := ff.serve(mustEmojiURL(t, code, customs), 90, nil)
+					status := ff.serve(mustEmojiURL(t, "calendar", nil), 91, nil)
+					if cells == 1 {
+						header, status = oneCellPlacement(header), oneCellPlacement(status)
+					}
+					warm := build(ff)
+					if !strings.Contains(warm, header) || !strings.Contains(warm, status) {
+						t.Fatalf("cells %d %s w%d: warm sidebar has no images:\n%q", cells, code, width, warm)
+					}
+					blank := strings.Repeat(" ", cells)
+					blanked := strings.NewReplacer(header, blank, status, blank).Replace(warm)
+					if c, w := ansi.Strip(cold), ansi.Strip(blanked); c != w {
+						t.Errorf("cells %d %s selected=%v w%d: cold is not warm with blanks:\ncold:\n%s\nwarm:\n%s", cells, code, selected, width, c, w)
+					}
+				}
+			}
+		}
 	}
 }

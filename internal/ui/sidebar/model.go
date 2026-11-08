@@ -398,10 +398,10 @@ type Model struct {
 	// buildCache need; View fires them right after that build.
 	emojiCtx       messages.EmojiContext
 	pendingFlushes []func(io.Writer) error
-	// emojiPlaced reports that the last buildCache placed at least one
-	// emoji image (warm or cold), so an emoji fetch landing may change
-	// what the sidebar draws.
-	emojiPlaced bool
+	// emojiCold reports that the last buildCache placed at least one
+	// emoji image that is still loading (its cells reserved), so an
+	// emoji fetch landing may change what the sidebar draws.
+	emojiCold bool
 }
 
 // SetEmojiContext configures emoji-image rendering for section headers
@@ -427,10 +427,11 @@ func (m *Model) SetEmojiCustoms(customs map[string]string) {
 // HandleEmojiImageReady rebuilds the cached rows after an emoji image
 // fetch finished (or failed), so a cold reservation becomes the image,
 // or the glyph fallback. The URL is unused: every row is rebuilt, but
-// only when the rows hold a placement. Any surface's fetch lands here,
-// and a sidebar that placed nothing has nothing to swap.
+// only when the rows hold a cold reservation. Any surface's fetch lands
+// here, and a warm image cannot change (new custom emoji go through
+// SetEmojiCustoms).
 func (m *Model) HandleEmojiImageReady(string) {
-	if !m.emojiPlaced {
+	if !m.emojiCold {
 		return
 	}
 	m.cacheValid = false
@@ -446,7 +447,9 @@ func (m *Model) placeEmoji(name string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	m.emojiPlaced = true
+	if strings.TrimSpace(placement) == "" {
+		m.emojiCold = true
+	}
 	if flush != nil {
 		m.pendingFlushes = append(m.pendingFlushes, flush)
 	}
@@ -1849,7 +1852,7 @@ func (m *Model) buildCache(width int) {
 	m.cacheWidth = width
 	m.cacheRows = m.cacheRows[:0]
 	m.pendingFlushes = nil
-	m.emojiPlaced = false
+	m.emojiCold = false
 	m.cacheFiller = lipgloss.NewStyle().Width(width).Background(styles.SidebarBackground).Render("")
 
 	// Per-channel read state for the active workspace. The DB is the
@@ -2145,11 +2148,15 @@ func (m *Model) buildCache(width int) {
 		// of pushing the emoji or the trailer off the row.
 		// In image mode the emoji is drawn as an image, charged its
 		// cell footprint. It is appended after the name is truncated,
-		// so truncation never cuts it.
+		// so truncation never cuts it. A glyph is charged the wider of
+		// lipgloss's count and GlyphWidth: in image mode emoji.Width
+		// counts an emoji as the image footprint, which with 1-cell
+		// images is narrower than the glyph a failed fetch falls back
+		// to.
 		statusGlyph := item.Status.Glyph(statusNow)
 		statusCells := 0
 		if statusGlyph != "" {
-			statusCells = 1 + item.Status.GlyphWidth(statusNow)
+			statusCells = 1 + max(item.Status.GlyphWidth(statusNow), lipgloss.Width(statusGlyph))
 			if placed, ok := m.placeEmoji(item.Status.GlyphShortcode(statusNow)); ok {
 				statusGlyph = placed
 				statusCells = 1 + m.emojiCells()
@@ -2341,6 +2348,9 @@ func (m *Model) sectionDisplayMeta(sectionKey string) (name, emoji string) {
 // fitSectionHeader for what gives way when it does not.
 func (m *Model) renderSectionHeaderLabel(name string, width int, cursor string, dotStyle lipgloss.Style, bgAnsi string) (string, string, int) {
 	displayName, emojiCode := m.sectionDisplayMeta(name)
+	// lipgloss expands a tab and breaks the line at a newline after the
+	// label was measured, so neither may reach it.
+	displayName = headerSpaceReplacer.Replace(displayName)
 	emojiPrefix := ""
 	emojiPrefixSelected := ""
 	emojiCells := 0
@@ -2354,20 +2364,19 @@ func (m *Model) renderSectionHeaderLabel(name string, width int, cursor string, 
 		// ReapplyBgAfterResets put back after the cursor glyph's reset.
 		emojiPrefix = placed + bubblesansi.ForegroundSGR(styles.SectionHeader.GetForeground()) + " "
 		emojiPrefixSelected = placed + bgAnsi + " "
-		// Charged the footprint it was placed with, never measured: a
-		// placement must not reach a width count or a truncation.
+		// Charged the footprint it was placed with, never measured.
 		emojiCells = m.emojiCells() + 1
 	} else if emojiCode != "" {
-		// emojiutil.Sprint resolves :shortcode: to the glyph and
-		// appends a space; on unknown shortcodes it returns the input
-		// unchanged (which keeps the colons, giving a graceful textual
-		// fallback).
-		token := ":" + emojiCode + ":"
-		rendered := emojiutil.Sprint(token)
-		if rendered != token {
-			emojiPrefix = rendered + " "
+		// The glyph only when it is one codepoint, as reaction pills
+		// and message bodies draw it: terminals draw VS16, ZWJ and
+		// skin-toned sequences at widths lipgloss does not predict,
+		// which shifts the row. Anything else (those, and unknown or
+		// custom emoji) is its ":code:" text, skin tone stripped.
+		code := emojiutil.StripSkinTone(emojiCode)
+		if glyph := emojiutil.CodeMap()[":"+code+":"]; emojiutil.ShouldRenderUnicode(glyph) {
+			emojiPrefix = glyph + " "
 		} else {
-			emojiPrefix = token + " "
+			emojiPrefix = ":" + code + ": "
 			textFallback = true
 		}
 		emojiPrefixSelected = emojiPrefix
@@ -2412,9 +2421,8 @@ func (m *Model) renderSectionHeaderLabel(name string, width int, cursor string, 
 	}
 
 	aggregateCells := headerCells(aggregates)
-	// The ":code:" text (an unknown emoji, or a custom one before the
-	// workspace's customs load) tells the user less than the name, so
-	// it gives way before the name is cut. An image or glyph stays.
+	// The ":code:" text tells the user less than the name, so it gives way before the name is cut.
+	// A glyph stays.
 	if textFallback && headerCells(displayName) > sectionHeaderNameBudget(width, emojiCells, aggregateCells) {
 		emojiPrefix, emojiPrefixSelected = "", ""
 		emojiCells = 0
@@ -2430,19 +2438,23 @@ func (m *Model) renderSectionHeaderLabel(name string, width int, cursor string, 
 
 	label := " " + glyph + " " + emojiPrefix + displayName + aggregates
 	selected := cursor + glyph + " " + emojiPrefixSelected + displayName + aggregates
-	selectedAttrs := bgAnsi + "\x1b[1m"
-	if m.slackStyle {
-		// Slack style draws headers at regular weight.
-		selectedAttrs = bgAnsi
-	}
 	// The selected variant re-applies bold after the cursor glyph's
 	// reset, as the channel rows do: SectionHeader is bold, and bgAnsi
 	// alone would draw the rest of the header regular. Not on the normal
 	// variant: there it would also land inside the mention badge's
-	// padding resets and make its digits bold.
+	// padding resets and make its digits bold. Slack style headers are
+	// never bold.
+	selectedAttrs := bgAnsi
+	if !m.slackStyle {
+		selectedAttrs += "\x1b[1m"
+	}
 	return messages.ReapplyBgAfterResets(label, bgAnsi),
 		messages.ReapplyBgAfterResets(selected, selectedAttrs), mentions
 }
+
+// headerSpaceReplacer turns the characters lipgloss would not keep on
+// one line into spaces.
+var headerSpaceReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
 
 // sectionHeaderChromeCells is what a header label spends before the
 // emoji: the cursor "▌" or a space (2, since "▌" is East Asian
@@ -2457,11 +2469,10 @@ const sectionHeaderChromeCells = 4
 // second line of a row counted as one.
 //
 // emojiCells and aggregateCells are the widths of the emoji prefix and
-// the collapsed aggregates. Neither is ever cut: an emoji placement
-// split in half draws garbage. When the header does not fit, the name
-// is truncated with "…"; with no column left for it, it is dropped,
-// then the emoji, then the aggregates. A header that fits returns its
-// name unchanged.
+// the collapsed aggregates. Neither is ever cut. When the header does
+// not fit, the name is truncated with "…"; with no column left for it,
+// it is dropped, then the emoji, then the aggregates. A header that
+// fits returns its name unchanged.
 func fitSectionHeader(width int, name string, emojiCells, aggregateCells int) (fitted string, keepEmoji, keepAggregates bool) {
 	avail := width - 4
 	nameBudget := sectionHeaderNameBudget(width, emojiCells, aggregateCells)
@@ -2489,8 +2500,7 @@ func sectionHeaderNameBudget(width, emojiCells, aggregateCells int) int {
 // headerCells measures header text the way both its readers need: as
 // lipgloss does, which decides the wrap, and as emoji.Width does, which
 // knows an emoji image's footprint. The larger wins, so neither
-// overflows (with a 1-cell image footprint emoji.Width counts a glyph
-// emoji 1 while lipgloss and the terminal count 2).
+// overflows.
 func headerCells(s string) int {
 	return max(lipgloss.Width(s), emojiutil.Width(s))
 }
@@ -2518,7 +2528,6 @@ func truncateHeaderName(name string, budget int) string {
 		used += w
 	}
 	return b.String() + "…"
-
 }
 
 // badgeGap is the run of spaces that pushes badge to the right end of a

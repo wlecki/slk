@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/gammons/slk/internal/emoji"
 	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/ui/messages"
@@ -68,16 +70,24 @@ func TestSidebarEmoji_InvalidationTickRebuildsTheSidebar(t *testing.T) {
 	emoji.SetImageMode(true, 2)
 	t.Cleanup(func() { emoji.SetImageMode(false, 2) })
 	url, _ := emoji.URLForShortcode("orange_book", nil)
-	ff := sidebarEmojiFetcher{emoji.EmojiCacheKey(url): {Cells: goimage.Pt(2, 1), Lines: []string{"\U0010EEEE\U0010EEEE"}}}
+	const imageSGR = "\x1b[38;2;0;0;44m"
+	ff := sidebarEmojiFetcher{}
 
 	a := newTestApp(t, withChannels(sidebar.ChannelItem{ID: "C1", Name: "handbook", Type: "channel", Section: "S1"}))
 	a.sidebar.SetSectionsProvider(sidebarSections{{ID: "S1", Name: "Docs", Emoji: "orange_book", Type: "standard"}})
 	a.SetEmojiContext(messages.EmojiContext{PlaceCtx: emoji.PlaceContext{Fetcher: ff}, Cells: 2})
-	_ = a.View()
+	if frame := a.View().Content; strings.Contains(frame, imageSGR) || !strings.Contains(ansi.Strip(frame), "▾    Docs") {
+		t.Fatalf("precondition: the cold header reserves two blank cells before the name:\n%s", frame)
+	}
 
-	v := a.sidebar.Version()
+	// The fetch lands: the image is warm, but the sidebar's cached rows
+	// still hold the reservation until the tick.
+	ff[emoji.EmojiCacheKey(url)] = imgpkg.Render{Cells: goimage.Pt(2, 1), Lines: []string{imageSGR + "\U0010EEEE̅̅\U0010EEEE̅̍\x1b[39m"}}
+	if frame := a.View().Content; strings.Contains(frame, imageSGR) {
+		t.Fatalf("precondition: the cached frame keeps the reservation until invalidated:\n%q", frame)
+	}
 	_, _ = a.Update(emojiInvalidateMsg{})
-	if a.sidebar.Version() == v {
-		t.Error("emojiInvalidateMsg did not invalidate the sidebar; its cached frame would keep the cold reservation")
+	if frame := a.View().Content; !strings.Contains(frame, imageSGR+"\U0010EEEE") {
+		t.Errorf("after the invalidation tick the frame does not draw the image:\n%q", frame)
 	}
 }
