@@ -641,6 +641,10 @@ type App struct {
 	// settings persists the theme choice and sidebar width. Nil until wired.
 	settings       core.SettingsService
 	themeOverrides core.Theme
+	// themeName is the name last passed to applyTheme, which may differ
+	// from styles.CurrentTheme: a custom theme whose file is missing
+	// resolves to Dark. A reload of the custom themes reapplies it.
+	themeName string
 	// pendingTheme is the theme a cycle (alt+y / alt+shift+y) applied
 	// but has not saved yet, with its workspace. themeSaveGen counts
 	// cycle presses, so a save tick from an earlier press can tell that

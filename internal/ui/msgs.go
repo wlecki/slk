@@ -25,6 +25,7 @@ import (
 	"github.com/gammons/slk/internal/ui/peerstatus"
 	"github.com/gammons/slk/internal/ui/searchresults"
 	"github.com/gammons/slk/internal/ui/sidebar"
+	"github.com/gammons/slk/internal/ui/styles"
 )
 
 // EmojiImageReadyMsg re-exports emoji.EmojiImageReadyMsg so reducers
@@ -583,6 +584,10 @@ type (
 	// for short error notices (e.g. failed status change). Auto-clears after
 	// 3 seconds via a CopiedClearMsg tick scheduled by the App.
 	ToastMsg struct{ Text string }
+	// CustomThemesReloadedMsg carries the custom theme files read again
+	// after something rewrote them (Noctalia's template hook signals slk).
+	// The App registers them and repaints with the theme on screen.
+	CustomThemesReloadedMsg struct{ Themes []styles.CustomTheme }
 )
 
 // autoScrollTickMsg is dispatched by tea.Tick while a drag is held near
