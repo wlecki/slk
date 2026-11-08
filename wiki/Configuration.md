@@ -19,6 +19,12 @@ hide_deactivated_users = true   # hide deactivated people, as the Slack desktop
 
 [appearance]
 theme = "dracula"
+transparent_background = false  # true: panes, sidebar, rail and status bar use the
+                                # terminal's own background, so its opacity and blur
+                                # show through. Set the opacity in the terminal
+                                # (WezTerm window_background_opacity, Ghostty
+                                # background-opacity, Alacritty opacity). Selection,
+                                # badges, the composer and dialogs keep their colours.
 timestamp_format = "3:04 PM"
 show_avatars = true      # false hides the avatars beside messages
 thread_avatars = false   # true also shows them in the thread pane (needs show_avatars)

@@ -1,0 +1,181 @@
+package ui
+
+import (
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/gammons/slk/internal/config"
+	"github.com/gammons/slk/internal/ui/styles"
+)
+
+// makeTransparent turns the transparent background on for a built App,
+// through the same applyTheme a theme switch uses, and turns it off
+// again after the test.
+func makeTransparent(t *testing.T, a *App, theme string) {
+	t.Helper()
+	styles.SetTransparentBackground(true)
+	t.Cleanup(func() {
+		styles.SetTransparentBackground(false)
+		styles.Apply("dark", config.Theme{})
+	})
+	a.applyTheme(theme)
+}
+
+// The scenarios and dialogs pinned again with the transparent background
+// on, as transparent_<name>.
+var (
+	transparentGoldenScenarios = []string{"base", "thread_open", "thread_parent_selected", "drag_selection", "overlay_finder"}
+	transparentGoldenDialogs   = []string{"dialog_confirm", "dialog_channel_finder_scroll", "dialog_search_results"}
+)
+
+func TestGolden_Transparent(t *testing.T) {
+	scenarios := map[string]goldenScenario{}
+	for _, sc := range goldenScenarios() {
+		scenarios[sc.name] = sc
+	}
+	for _, name := range transparentGoldenScenarios {
+		t.Run(name, func(t *testing.T) {
+			sc, ok := scenarios[name]
+			if !ok {
+				t.Fatalf("no golden scenario %q", name)
+			}
+			a := sc.build(t)
+			makeTransparent(t, a, "dark")
+			compareGolden(t, "transparent_"+name, a.View().Content)
+		})
+	}
+
+	dialogs := map[string]dialogGolden{}
+	for _, d := range dialogGoldens() {
+		dialogs[d.name] = d
+	}
+	for _, name := range transparentGoldenDialogs {
+		t.Run(name, func(t *testing.T) {
+			d, ok := dialogs[name]
+			if !ok {
+				t.Fatalf("no dialog golden %q", name)
+			}
+			opts := goldenFixtureOpts()
+			if d.w != 0 {
+				opts = append(opts, withSize(d.w, d.h))
+			}
+			a := newGoldenApp(t, opts...)
+			makeTransparent(t, a, "dark")
+			d.open(t, a)
+			frame := a.View().Content
+			if !d.shown(a) {
+				t.Fatalf("%s: the dialog is not open", name)
+			}
+			compareGolden(t, "transparent_"+name, frame)
+		})
+	}
+}
+
+// transparentTestColors is a theme whose base colours are each unique, so
+// a frame can be searched for any one of them.
+var transparentTestColors = styles.ThemeColors{
+	Primary: "#4A9EFF", Accent: "#50C878", Warning: "#E0A030", Error: "#E04040",
+	Background:        "#101820",
+	SidebarBackground: "#111921",
+	RailBackground:    "#121A22",
+	SurfaceDark:       "#131B23",
+	Surface:           "#202830",
+	Text:              "#E0E0E0", TextMuted: "#888888", Border: "#333333",
+}
+
+var sgrRe = regexp.MustCompile("\x1b\\[([0-9;]*)m")
+
+// bgParams returns every truecolor background ("R;G;B") a frame sets,
+// per line. A 48;2 inside some other colour group can't occur: the
+// groups are walked in order.
+func bgParams(frame string) [][]string {
+	var out [][]string
+	for _, line := range strings.Split(frame, "\n") {
+		var bgs []string
+		for _, m := range sgrRe.FindAllStringSubmatch(line, -1) {
+			p := strings.Split(m[1], ";")
+			for i := 0; i < len(p); i++ {
+				if (p[i] == "38" || p[i] == "48" || p[i] == "58") && i+1 < len(p) {
+					switch p[i+1] {
+					case "2":
+						if p[i] == "48" && i+4 < len(p) {
+							bgs = append(bgs, strings.Join(p[i+2:i+5], ";"))
+						}
+						i += 4
+					case "5":
+						i += 2
+					}
+				}
+			}
+		}
+		out = append(out, bgs)
+	}
+	return out
+}
+
+// TestTransparentFrameHasNoBaseFill renders whole frames with the
+// transparent background on and looks for the base colours: none of the
+// pane, sidebar and rail backgrounds may be painted anywhere, and the
+// status bar (the last row) may not be painted with surface_dark. The
+// composer keeps surface_dark, so that one is only checked on the status
+// row.
+func TestTransparentFrameHasNoBaseFill(t *testing.T) {
+	styles.RegisterCustomTheme("Transparent Frame Test", transparentTestColors)
+	banned := map[string]string{
+		"16;24;32": "background",
+		"17;25;33": "sidebar_background",
+		"18;26;34": "rail_background",
+	}
+	const surfaceDark = "19;27;35"
+
+	for _, sc := range goldenScenarios() {
+		if sc.name == "overlay_finder" {
+			continue // a dialog keeps the theme background on purpose
+		}
+		t.Run(sc.name, func(t *testing.T) {
+			a := sc.build(t)
+			makeTransparent(t, a, "Transparent Frame Test")
+			lines := bgParams(a.View().Content)
+			for i, bgs := range lines {
+				for _, bg := range bgs {
+					if name, ok := banned[bg]; ok {
+						t.Fatalf("row %d paints %s (%s)", i, name, bg)
+					}
+				}
+			}
+			for _, bg := range lines[len(lines)-1] {
+				if bg == surfaceDark {
+					t.Fatalf("the status bar paints surface_dark (%s)", bg)
+				}
+			}
+		})
+	}
+}
+
+// And the other way round: with the option off the same theme does paint
+// those colours, so the test above can fail.
+func TestTransparentFrameCheckSeesOpaqueFill(t *testing.T) {
+	styles.RegisterCustomTheme("Transparent Frame Test", transparentTestColors)
+	a := newGoldenApp(t, goldenFixtureOpts()...)
+	a.applyTheme("Transparent Frame Test")
+	lines := bgParams(a.View().Content)
+	seen := map[string]bool{}
+	for _, bgs := range lines {
+		for _, bg := range bgs {
+			seen[bg] = true
+		}
+	}
+	for _, want := range []string{"16;24;32", "17;25;33", "18;26;34"} {
+		if !seen[want] {
+			t.Errorf("opaque frame never paints %s; the transparent check would pass vacuously", want)
+		}
+	}
+	statusSeen := false
+	for _, bg := range lines[len(lines)-1] {
+		statusSeen = statusSeen || bg == "19;27;35"
+	}
+	if !statusSeen {
+		t.Error("opaque status bar does not paint surface_dark")
+	}
+}

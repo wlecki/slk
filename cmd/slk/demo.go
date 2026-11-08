@@ -31,6 +31,7 @@ func runDemo(scenario string) error {
 	if err != nil {
 		return err
 	}
+	styles.SetTransparentBackground(os.Getenv("SLK_DEMO_TRANSPARENT") == "1")
 	styles.Apply(d.InitialTheme(), core.Theme{})
 	emojiwidth.SetImageMode(false, 2)
 

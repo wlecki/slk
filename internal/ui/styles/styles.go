@@ -30,6 +30,12 @@ var (
 	SidebarTextMuted  color.Color = lipgloss.Color("#888888")
 	RailBackground    color.Color = lipgloss.Color("#0F0F23")
 
+	// StatusBarBackground fills the status bar. It is SurfaceDark, or
+	// lipgloss.NoColor{} with the transparent background on. Use it for
+	// the status bar instead of SurfaceDark, which also fills the
+	// composer, popups and image frames, and those stay solid.
+	StatusBarBackground color.Color = lipgloss.Color("#0F0F23")
+
 	// Selection highlight. Apply() either copies the theme's values or
 	// derives a sensible default (Primary as bg, Background as fg) so
 	// SelectionStyle() always produces visible highlight on any theme.
@@ -434,6 +440,7 @@ func Apply(themeName string, overrides core.Theme) {
 		selectionBgUnfocused = lipgloss.Color(colors.SelectionBgUnfocused)
 	}
 
+	applyTransparency()
 	buildStyles()
 }
 
@@ -507,7 +514,7 @@ func buildStyles() {
 	ThreadIndicator = lipgloss.NewStyle().
 		Background(Background).Foreground(Primary).Italic(true)
 	StatusBar = lipgloss.NewStyle().
-		Background(SurfaceDark).Foreground(TextPrimary).Padding(0, 1)
+		Background(StatusBarBackground).Foreground(TextPrimary).Padding(0, 1)
 	StatusMode = lipgloss.NewStyle().
 		Background(Primary).Foreground(lipgloss.Color("#FFFFFF")).Bold(true).Padding(0, 1)
 	StatusModeInsert = lipgloss.NewStyle().
@@ -515,7 +522,7 @@ func buildStyles() {
 	StatusModeCommand = lipgloss.NewStyle().
 		Background(Warning).Foreground(lipgloss.Color("#000000")).Bold(true).Padding(0, 1)
 	StatusbarSyncing = lipgloss.NewStyle().
-		Background(SurfaceDark).Foreground(TextMuted)
+		Background(StatusBarBackground).Foreground(TextMuted)
 	ComposeBox = lipgloss.NewStyle().
 		BorderStyle(thickLeftBorder).BorderLeft(true).BorderForeground(Border).BorderBackground(SurfaceDark).
 		Background(SurfaceDark).Foreground(TextPrimary).Padding(1, 1, 1, 1)
@@ -618,8 +625,8 @@ func MutedMentionBadgeStyle() lipgloss.Style {
 	// the undimmed background rather than panicking; there is nothing
 	// to mix toward yet.
 	bg, _ := mentionBadgeColors()
-	if bg != nil && SidebarBackground != nil {
-		bg = mixColors(bg, SidebarBackground, mutedMentionBadgeAlpha)
+	if sb := ThemeSidebarBackground(); bg != nil && sb != nil {
+		bg = mixColors(bg, sb, mutedMentionBadgeAlpha)
 	}
 	return lipgloss.NewStyle().
 		Background(bg).

@@ -13,7 +13,7 @@ import (
 // pushes nothing. Each style is exactly the one the dialogs built inline
 // before Phase 4 (TestChromeStyles_MatchTheInlineStyles).
 func ChromeStyles() chrome.Styles {
-	bg := styles.Background
+	bg := styles.ThemeBackground()
 	on := func() lipgloss.Style { return lipgloss.NewStyle().Background(bg) }
 	return chrome.Styles{
 		Box: lipgloss.NewStyle().
@@ -44,6 +44,6 @@ func ChromeStyles() chrome.Styles {
 		Footer:      on().Foreground(styles.TextMuted),
 		Thumb:       on().Foreground(styles.Primary),
 		Track:       on().Foreground(styles.Border),
-		BaseANSI:    BgANSI() + FgANSI(),
+		BaseANSI:    SolidBgANSI() + FgANSI(),
 	}
 }

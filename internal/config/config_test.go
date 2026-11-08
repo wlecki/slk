@@ -1187,3 +1187,15 @@ func TestConfig_ThreadAvatars(t *testing.T) {
 		t.Error("expected thread_avatars = true to turn thread avatars on")
 	}
 }
+
+func TestConfig_TransparentBackground(t *testing.T) {
+	if Default().Appearance.TransparentBackground {
+		t.Error("Default() transparent_background = true, want false")
+	}
+	if loadConfigString(t, "[appearance]\ntheme = \"dark\"\n").Appearance.TransparentBackground {
+		t.Error("unset transparent_background read back true, want false")
+	}
+	if !loadConfigString(t, "[appearance]\ntransparent_background = true\n").Appearance.TransparentBackground {
+		t.Error("transparent_background = true read back false")
+	}
+}

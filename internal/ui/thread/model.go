@@ -1164,7 +1164,7 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 			Background(styles.SelectionTintColor(m.focused)).
 			Render(parentContent)
 	} else {
-		parentContent = lipgloss.NewStyle().BorderStyle(thickLeftBorder).BorderLeft(true).
+		parentContent = lipgloss.NewStyle().BorderStyle(styles.InvisibleLeftBorder()).BorderLeft(true).
 			BorderForeground(styles.Background).BorderBackground(styles.Background).
 			Render(parentContent)
 	}

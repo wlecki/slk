@@ -244,6 +244,7 @@ func run() error {
 	// WorkspaceReadyMsg.Theme once that workspace finishes connecting,
 	// which avoids a flash of the wrong theme without needing to know
 	// the active TeamID up front (workspaces connect in goroutines).
+	styles.SetTransparentBackground(cfg.Appearance.TransparentBackground)
 	styles.Apply(cfg.Appearance.Theme, cfg.Theme)
 
 	notifier := notify.New(cfg.Notifications.Enabled, cfg.Notifications.NotifyCommand)
