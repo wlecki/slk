@@ -840,7 +840,7 @@ func TestNormalModeKeys(t *testing.T) {
 		},
 
 		// -------------------------------------------------------------
-		// Arms 15 & 16: NavBack `ctrl+h` / NavForward `ctrl+l` (alias `ctrl+k`)
+		// Arms 15 & 16: NavBack `ctrl+h` / NavForward `ctrl+l`
 		// -------------------------------------------------------------
 		{
 			name:     "ctrl+h walks the nav history backward",
@@ -862,7 +862,6 @@ func TestNormalModeKeys(t *testing.T) {
 			},
 		},
 		navForwardCase("ctrl+l walks the nav history forward", 'l'),
-		navForwardCase("ctrl+k (alias) walks the nav history forward", 'k'),
 		{
 			// The arm's `if cmd != nil` guard falls THROUGH on an empty
 			// stack rather than returning, so the switch ends at the
@@ -1358,6 +1357,17 @@ func TestNormalModeKeys(t *testing.T) {
 		// -------------------------------------------------------------
 		// Arm 32: FuzzyFinder / FuzzyFinderAlt (mode_normal.go:233)
 		// -------------------------------------------------------------
+		{
+			name:     "ctrl+k opens the channel finder",
+			opts:     normalOpts(),
+			key:      keyMod('k', tea.ModCtrl),
+			wantMode: ModeChannelFinder,
+			assert: func(t *testing.T, a *App, _ tea.Cmd) {
+				if !a.channelFinder.IsVisible() {
+					t.Error("channel finder not visible")
+				}
+			},
+		},
 		{
 			name:     "ctrl+t opens the channel finder",
 			opts:     normalOpts(),
