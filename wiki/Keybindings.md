@@ -29,7 +29,7 @@
 | `/` | Normal | Search in channel (vim-style; searches cached history of the current channel) |
 | `n` / `N` | Normal | Next / previous search match (wraps) |
 | `a` / `A` | Normal | Jump to next / previous unread channel (wraps) |
-| `Ctrl+h` / `Ctrl+l` | Normal | Navigate back / forward through visited channels, returning to the message you were reading when you left (`Ctrl+k` also works) |
+| `Ctrl+h` / `Ctrl+l` | Normal | Navigate back / forward through visited channels, returning to the message you were reading when you left |
 | `Esc` | Normal (search active) | Clear active search |
 | `m{a-z}` | Normal (message) | Set a session mark on the selected message — lost when slk exits |
 | `m{A-Z}` | Normal (message) | Set a persistent mark — survives a restart |
@@ -46,7 +46,7 @@
 | `:activity` | Normal | Open the Activity view |
 | `u` | Normal (activity) | Toggle the Activity view's unread-only filter |
 | `U` | Normal (activity) | Toggle the selected Activity item read/unread |
-| `Ctrl+t` / `Ctrl+p` | Any | Fuzzy channel finder |
+| `Ctrl+k` / `Ctrl+t` / `Ctrl+p` | Any | Fuzzy channel finder (`Ctrl+k` from normal mode only: in the composer it deletes to line end) |
 | `:ws` | Normal | Workspace picker |
 | `Ctrl+w s` / `:sp` | Normal | Split the focused window into two, one above the other |
 | `Ctrl+w v` / `:vsp` | Normal | Split the focused window into two, side by side |

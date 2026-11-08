@@ -49,7 +49,7 @@ These aren't `:` commands, but slk does them:
 | You tried | Use |
 |---|---|
 | `:search` | `/` searches the current channel; `Ctrl+f` searches the whole workspace on Slack's servers |
-| `:join`, `:goto`, `:chan` | `Ctrl+t` or `Ctrl+p` opens the channel finder; `/open #channel` in a composer joins and opens a channel by name |
+| `:join`, `:goto`, `:chan` | `Ctrl+k`, `Ctrl+t` or `Ctrl+p` opens the channel finder; `/open #channel` in a composer joins and opens a channel by name |
 | `:i` | `i` starts writing a message (Insert mode) |
 | `:w` | `Enter` in Insert mode sends the message |
 | `:q` to quit | `Q` or `Ctrl+c` quits after asking (`q` closes the thread pane) |
