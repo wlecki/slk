@@ -17,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/gammons/slk/internal/bubbles/confirmprompt"
+	"github.com/gammons/slk/internal/bubbles/linkpicker"
 	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/debuglog"
 	"github.com/gammons/slk/internal/emoji"
@@ -30,7 +31,6 @@ import (
 	"github.com/gammons/slk/internal/ui/emojipicker"
 	"github.com/gammons/slk/internal/ui/help"
 	"github.com/gammons/slk/internal/ui/imgrender"
-	"github.com/gammons/slk/internal/ui/linkpicker"
 	"github.com/gammons/slk/internal/ui/marks"
 	"github.com/gammons/slk/internal/ui/mentionpicker"
 	"github.com/gammons/slk/internal/ui/messages"
@@ -783,6 +783,9 @@ type App struct {
 	scrollPending        int
 	scrollPanel          Panel
 	scrollFlushScheduled bool
+
+	// Whether the app layout should be compact
+	compact bool
 }
 
 // pendingChannelMarkState is App.pendingChannelMark's slot: the newest
@@ -1100,7 +1103,7 @@ func (a *App) threadDrawnAlone() bool {
 	}
 	var scratch panelLayout
 	frame := scratch.Compute(a.width, a.height, a.workspaceRail.Width(), a.sidebar.Width(),
-		a.sidebarVisible, a.threadVisible, a.threadInFront())
+		a.sidebarVisible, a.threadVisible, a.threadInFront(), a.compact)
 	return frame.MsgWidth == 0
 }
 
@@ -1109,7 +1112,7 @@ func (a *App) threadDrawnAlone() bool {
 // assembled; tests call it instead of repeating Compute's arguments.
 func (a *App) computeFrame() panelLayoutFrame {
 	return a.layout.Compute(a.width, a.height, a.workspaceRail.Width(), a.sidebar.Width(),
-		a.sidebarVisible, a.threadVisible, a.threadInFront())
+		a.sidebarVisible, a.threadVisible, a.threadInFront(), a.compact)
 }
 
 func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1426,7 +1429,7 @@ func (a *App) openUserProfile() tea.Cmd {
 		// show is whoever started the huddle.
 		if p, _, focused := a.focusedContentPane(); focused {
 			if msg, sel := p.SelectedMessage(); sel {
-				if starter := messages.HuddleStarter(msg); starter != "" && msg.Subtype == "huddle_thread" {
+				if starter := messages.HuddleStarter(msg); starter != "" && msg.Subtype == core.SubtypeHuddleThread {
 					userID = starter
 				}
 			}
@@ -1563,12 +1566,13 @@ func (a *App) copyPermalinkOfSelected() tea.Cmd {
 	messageSvc := a.messageSvc
 	cID := ids.ChannelID(channelID)
 	mTS := ids.MessageTS(ts)
+	tTS := a.selectedThreadTS()
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		url, err := messageSvc.Permalink(ctx, cID, mTS)
+		url, err := messageSvc.Permalink(ctx, cID, mTS, tTS)
 		if err != nil {
 			log.Printf("copy permalink: %v", err)
 			return statusbar.PermalinkCopyFailedMsg{}
@@ -1613,7 +1617,7 @@ func (a *App) openLinksOfSelected() tea.Cmd {
 			items[i] = linkpicker.Item{URL: l.URL, Label: l.Label, InApp: a.linkOpensInApp(l.URL)}
 		}
 		a.pickerKind = "links"
-		a.linkPicker.Open("Open link", items)
+		a.openLinkPicker("Open link", items)
 		a.SetMode(ModeLinkPicker)
 		return nil
 	}
@@ -1658,7 +1662,7 @@ func (a *App) downloadFilesOfSelected() tea.Cmd {
 		}
 		a.pickerKind = "files"
 		a.pickerFiles = files
-		a.linkPicker.Open("Download file", items)
+		a.openLinkPicker("Download file", items)
 		a.SetMode(ModeLinkPicker)
 		return nil
 	}
@@ -2998,6 +3002,21 @@ func (a *App) SetColoredUsernames(enabled bool) {
 		m.SetColoredUsernames(enabled)
 	}
 	a.threadPanel.SetColoredUsernames(enabled)
+}
+
+// SetCompact enables or disables the compact view
+func (a *App) SetCompact(enabled bool) {
+	a.compact = enabled
+	styles.ApplyCompact(enabled)
+	for _, m := range a.allWinModels() {
+		m.SetCompact(enabled)
+	}
+	a.threadPanel.SetCompact(enabled)
+	a.invalidateAllWinModelCaches()
+	a.threadPanel.InvalidateCache()
+	a.sidebar.InvalidateCache()
+	a.compose.RefreshStyles()
+	a.threadCompose.RefreshStyles()
 }
 
 // SetThreadAvatars draws avatars in the thread panel too, when the avatar

@@ -111,7 +111,7 @@ func TestTransparentChromeStylesStaySolid(t *testing.T) {
 func TestTransparentWrapRowsInvisibleBorder(t *testing.T) {
 	transparentDark(t)
 	msg := MessageItem{TS: "1.0", UserName: "alice", Text: "hi", Timestamp: "3:04 PM"}
-	rows := WrapRows(msg, RenderedMessage{Content: "hi"}, 20, NewWrapStyles(true))
+	rows := WrapRows(msg, RenderedMessage{Content: "hi"}, 20, NewWrapStyles(true, false))
 	for _, l := range rows.Lines {
 		if strings.Contains(l, "▌") {
 			t.Errorf("unselected row draws the ▌ border glyph, which shows on a transparent cell: %q", l)

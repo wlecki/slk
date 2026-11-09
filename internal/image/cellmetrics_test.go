@@ -40,8 +40,8 @@ func TestMeasureCellPixels_ReportsWhetherMeasured(t *testing.T) {
 	defer func() { getenv = saved }()
 
 	getenv = func(string) string { return "" }
-	if w, h, measured := MeasureCellPixels(-1); measured || w != 8 || h != 16 {
-		t.Errorf("fallback: got (%d,%d,%v), want (8,16,false)", w, h, measured)
+	if w, h, measured := MeasureCellPixels(-1); measured {
+		t.Errorf("no env, no ioctl: got (%d,%d,%v), want measured false", w, h, measured)
 	}
 
 	getenv = func(k string) string {

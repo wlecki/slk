@@ -3,6 +3,7 @@ package image
 import (
 	"bytes"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -145,6 +146,7 @@ func TestProbeSixel_ReadsReply(t *testing.T) {
 // answer as the goroutine fallback, and must not leave a reader behind
 // that steals bytes from bubbletea afterwards (the issue #50 hazard).
 func TestProbeSixel_PollPathOnRealPipe(t *testing.T) {
+	skipPipeProbeOnWindows(t)
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
@@ -201,5 +203,16 @@ func TestProbeKittyQuery_AcceptsOK(t *testing.T) {
 	reply := strings.NewReader("\x1b_Gi=9999;OK\x1b\\")
 	if !ProbeKittyQuery(&w, reply, time.Second) {
 		t.Error("expected the OK reply to pass the probe")
+	}
+}
+
+// skipPipeProbeOnWindows skips a test that hands a probe an os.Pipe. On
+// Windows the poll path reads console input records (ReadConsoleInputW
+// in probe_windows.go), which a pipe handle does not have, so the probe
+// can only fall back to "no answer" there.
+func skipPipeProbeOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the Windows poll path reads console input, which a pipe is not")
 	}
 }

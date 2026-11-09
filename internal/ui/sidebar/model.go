@@ -781,15 +781,6 @@ func (m *Model) SetStaleThreshold(d time.Duration) {
 	m.dirty()
 }
 
-// SetDeactivatedUsers sets the user IDs whose DM and app rows are hidden;
-// nil shows everyone. The map is kept, not copied, so the caller must not
-// write it afterwards. Re-runs the filter and keeps the cursor on the
-// same item.
-func (m *Model) SetDeactivatedUsers(users map[string]bool) {
-	m.deactivated = users
-	m.refilter()
-}
-
 // SetRightAlignBadges puts mention badges at the right end of their rows.
 func (m *Model) SetRightAlignBadges(enabled bool) {
 	m.rightAlignBadges = enabled
@@ -830,6 +821,14 @@ func (m *Model) SetPrivateGlyph(glyph string) {
 // sidebar filter does.
 func (m *Model) SetActiveOnly(enabled bool) {
 	m.activeOnly = enabled
+	m.refilter()
+}
+
+// SetDeactivatedUsers sets the user IDs whose DM and app rows are hidden;
+// nil shows everyone. The map is kept, not copied, so the caller must not
+// write it afterwards. Keeps the cursor on the same item.
+func (m *Model) SetDeactivatedUsers(users map[string]bool) {
+	m.deactivated = users
 	m.refilter()
 }
 
@@ -1944,10 +1943,7 @@ func (m *Model) buildCache(width int) {
 	threadsCursor := cursorSelected + "⚑ Threads"
 	threadsActiveLabel := activeBorder + "⚑ Threads"
 	if m.threadsUnread > 0 {
-		// Render "•N" as a single styled span so the dot glyph and the digits
-		// stay adjacent in the output (no ANSI reset splits them). Tests rely
-		// on the literal substring "•N" being searchable in View() output.
-		badge := " " + dotStyle.Render("•"+fmt.Sprintf("%d", m.threadsUnread))
+		badge := m.countBadge(threadsLabel, m.threadsUnread, width, dotStyle)
 		threadsLabel += badge
 		threadsCursor += badge
 		threadsActiveLabel += badge
@@ -1986,7 +1982,7 @@ func (m *Model) buildCache(width int) {
 	activityCursor := cursorSelected + "◉ Activity"
 	activityActiveLabel := activeBorder + "◉ Activity"
 	if m.activityUnread > 0 {
-		badge := " " + dotStyle.Render("•"+fmt.Sprintf("%d", m.activityUnread))
+		badge := m.countBadge(activityLabel, m.activityUnread, width, dotStyle)
 		activityLabel += badge
 		activityCursor += badge
 		activityActiveLabel += badge
@@ -2528,6 +2524,17 @@ func truncateHeaderName(name string, budget int) string {
 		used += w
 	}
 	return b.String() + "…"
+}
+
+// countBadge is the Threads or Activity count after left: "•N" (one
+// span, so tests find it), or the mention badge at the row's end under
+// right_align_badges, as Slack draws it.
+func (m *Model) countBadge(left string, n, width int, dotStyle lipgloss.Style) string {
+	if !m.rightAlignBadges {
+		return " " + dotStyle.Render("•"+fmt.Sprintf("%d", n))
+	}
+	badge := styles.MentionBadgeStyle().Render(formatMentionBadge(n))
+	return badgeGap(width, left, badge) + badge
 }
 
 // badgeGap is the run of spaces that pushes badge to the right end of a

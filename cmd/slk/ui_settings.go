@@ -19,15 +19,17 @@ type uiSettings struct {
 	MentionPills     bool
 	TypingIndicators bool
 	StaleAfter       time.Duration
-	// HideDeactivatedUsers is general.hide_deactivated_users.
+	RightAlignBadges bool
+	ChannelIndent    int
+	SidebarStyle     ui.SidebarStyle
+	MouseWheelLines  int
+	ColoredUsernames bool
+	Compact          bool
+	ThreadAvatars    bool
+	ThemeOverrides   core.Theme
+	// HideDeactivatedUsers is [general] hide_deactivated_users (default
+	// on).
 	HideDeactivatedUsers bool
-	RightAlignBadges     bool
-	ChannelIndent        int
-	SidebarStyle         ui.SidebarStyle
-	MouseWheelLines      int
-	ColoredUsernames     bool
-	ThreadAvatars        bool
-	ThemeOverrides       core.Theme
 	// StayInInsertAfterSend is [compose] stay_in_insert_after_send
 	// (default off).
 	StayInInsertAfterSend bool
@@ -52,16 +54,17 @@ func uiSettingsFromConfig(cfg config.Config) uiSettings {
 		MentionPills:          cfg.Sidebar.MentionPills,
 		TypingIndicators:      cfg.Animations.TypingIndicators,
 		StaleAfter:            time.Duration(cfg.Sidebar.HideInactiveAfterDays) * 24 * time.Hour,
-		HideDeactivatedUsers:  cfg.General.HideDeactivatedUsers,
 		RightAlignBadges:      cfg.Sidebar.RightAlignBadges,
 		ChannelIndent:         cfg.Sidebar.ChannelIndent,
 		SidebarStyle:          sidebarStyleFromConfig(cfg.Sidebar),
 		MouseWheelLines:       cfg.Appearance.MouseWheelLines,
 		ColoredUsernames:      cfg.Appearance.ColoredUsernames,
+		Compact:               cfg.Appearance.Compact,
 		ThreadAvatars:         cfg.Appearance.ThreadAvatars,
 		ThemeOverrides:        cfg.Theme,
 		StayInInsertAfterSend: cfg.Compose.StayInInsertAfterSend,
 		ReplyAvatars:          cfg.Appearance.ReplyAvatars,
+		HideDeactivatedUsers:  cfg.General.HideDeactivatedUsers,
 	}
 }
 
@@ -80,10 +83,11 @@ func applyUISettings(app *ui.App, s uiSettings) {
 	app.SetChannelIndent(s.ChannelIndent)
 	app.SetSidebarStyle(s.SidebarStyle)
 	app.SetSidebarStaleThreshold(s.StaleAfter)
-	app.SetHideDeactivatedUsers(s.HideDeactivatedUsers)
 	app.SetMentionPills(s.MentionPills)
+	app.SetHideDeactivatedUsers(s.HideDeactivatedUsers)
 	app.SetMouseWheelLines(s.MouseWheelLines)
 	app.SetColoredUsernames(s.ColoredUsernames)
+	app.SetCompact(s.Compact)
 	app.SetThreadAvatars(s.ThreadAvatars)
 	app.SetThemeItems(styles.ThemeNames())
 	app.SetThemeOverrides(s.ThemeOverrides)

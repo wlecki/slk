@@ -1287,6 +1287,18 @@ func TestBroadcastHintWrapping(t *testing.T) {
 	}
 }
 
+// TestRefreshStylesBumpsVersion: a restyle changes what View renders,
+// so it must bump the render version like every other such mutation
+// (#192).
+func TestRefreshStylesBumpsVersion(t *testing.T) {
+	m := New("general")
+	v := m.Version()
+	m.RefreshStyles()
+	if m.Version() == v {
+		t.Errorf("Version() = %d after RefreshStyles, want it bumped", m.Version())
+	}
+}
+
 // A deactivated user is not suggested, but "@Name" typed by hand still
 // becomes a mention on send, as it did before the user was hidden.
 func TestDeactivatedUserIsNotSuggestedButStillTranslated(t *testing.T) {
@@ -1305,14 +1317,16 @@ func TestDeactivatedUserIsNotSuggestedButStillTranslated(t *testing.T) {
 	}
 }
 
-// TestRefreshStylesBumpsVersion: a restyle changes what View renders,
-// so it must bump the render version like every other such mutation
-// (#192).
-func TestRefreshStylesBumpsVersion(t *testing.T) {
+func TestComposeCursorUsesThemeText(t *testing.T) {
+	styles.Apply("light", config.Theme{})
+	defer styles.Apply("dark", config.Theme{})
 	m := New("general")
-	v := m.Version()
+	if got := m.input.Styles().Cursor.Color; got != styles.TextPrimary {
+		t.Fatalf("cursor colour = %v, want the theme text colour %v", got, styles.TextPrimary)
+	}
+	styles.Apply("dark", config.Theme{})
 	m.RefreshStyles()
-	if m.Version() == v {
-		t.Errorf("Version() = %d after RefreshStyles, want it bumped", m.Version())
+	if got := m.input.Styles().Cursor.Color; got != styles.TextPrimary {
+		t.Fatalf("after a theme switch cursor colour = %v, want %v", got, styles.TextPrimary)
 	}
 }
