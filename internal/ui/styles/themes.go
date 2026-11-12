@@ -604,7 +604,7 @@ func ParseCustomThemes(fsys fs.FS) []CustomTheme {
 		if tf.Colors.Border == "" {
 			tf.Colors.Border = dark.Border
 		}
-		themes = append(themes, CustomTheme{Name: tf.Name, Colors: tf.Colors})
+		themes = append(themes, CustomTheme(tf))
 	}
 	return themes
 }
