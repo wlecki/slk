@@ -59,6 +59,20 @@ type WorkspaceContext struct {
 	// with WS hydration and item construction, so this must not be a plain
 	// map. Use MarkBotUser/IsBotUser; sync.Map's zero value is ready for use.
 	botUserIDs sync.Map // user ID -> struct{}; positive classifications only
+	// conversationIDs holds this workspace's known conversation IDs -
+	// every entry of Channels, published at each write. Channels itself
+	// is a plain slice written on the connect goroutine and the
+	// WebSocket event owner, so readers off those goroutines (the
+	// Activity fetch's org-wide feed filter) must not touch it; this
+	// set is the race-safe projection. The set's lifetime mirrors the
+	// rows': both are grow-only during a session (a conversation the
+	// user leaves keeps its row until the next connect rebuilds the
+	// list, so it also keeps passing the filter - the filter and the
+	// sidebar agree). Use MarkConversation / HasConversation;
+	// sync.Map's zero value is ready for use, and empty means "still
+	// booting", which callers treat as no-filter-yet rather than
+	// no-conversations.
+	conversationIDs sync.Map // channel ID -> struct{}
 	// SectionStore holds the user's Slack-native sidebar sections for
 	// this workspace. Nil when use_slack_sections is disabled, the
 	// REST bootstrap failed, or this workspace hasn't connected yet.
@@ -147,6 +161,9 @@ type WorkspaceContext struct {
 	// The stored map is published once and never mutated afterwards, so
 	// readers need no further synchronization.
 	userGroups atomic.Pointer[map[string]string]
+	// selfUserGroups is the IDs of the usergroups the user is in,
+	// published alongside userGroups and read the same way.
+	selfUserGroups atomic.Pointer[map[string]bool]
 	// Self presence and DND state for this workspace. Populated on connect
 	// and updated by manual_presence_change / dnd_updated WS events plus
 	// optimistic writes from the presence menu.
@@ -203,6 +220,42 @@ func (w *WorkspaceContext) MarkBotUser(userID string) {
 	}
 }
 
+// HasConversation reports whether channelID is one of this workspace's
+// known conversations. Safe from any goroutine; a nil workspace or a
+// channel not (yet) known returns false.
+func (w *WorkspaceContext) HasConversation(channelID string) bool {
+	if w == nil {
+		return false
+	}
+	_, ok := w.conversationIDs.Load(channelID)
+	return ok
+}
+
+// HasAnyConversation reports whether this workspace knows any
+// conversation yet. Safe from any goroutine; false means the
+// conversation set is still empty (typically still booting), which
+// callers treat as not-enough-information rather than as an answer.
+func (w *WorkspaceContext) HasAnyConversation() bool {
+	if w == nil {
+		return false
+	}
+	found := false
+	w.conversationIDs.Range(func(_, _ any) bool {
+		found = true
+		return false
+	})
+	return found
+}
+
+// MarkConversation records a conversation as belonging to this
+// workspace, alongside every write to the Channels slice. Safe from any
+// goroutine; nil workspaces and empty IDs are ignored.
+func (w *WorkspaceContext) MarkConversation(channelID string) {
+	if w != nil && channelID != "" {
+		w.conversationIDs.Store(channelID, struct{}{})
+	}
+}
+
 // UserGroups returns this workspace's usergroup ID -> handle map, or an
 // empty map before usergroups.list has returned. Safe to call from any
 // goroutine; the result must be treated as read-only.
@@ -217,6 +270,21 @@ func (w *WorkspaceContext) UserGroups() map[string]string {
 // workspace. The caller must not mutate the map afterwards.
 func (w *WorkspaceContext) SetUserGroups(groups map[string]string) {
 	w.userGroups.Store(&groups)
+}
+
+// SelfUserGroups returns the IDs of the usergroups the user is in, or
+// nil before usergroups.list has returned. Read-only, like UserGroups.
+func (w *WorkspaceContext) SelfUserGroups() map[string]bool {
+	if m := w.selfUserGroups.Load(); m != nil {
+		return *m
+	}
+	return nil
+}
+
+// SetSelfUserGroups publishes the user's usergroup IDs. The caller must
+// not mutate the map afterwards.
+func (w *WorkspaceContext) SetSelfUserGroups(groups map[string]bool) {
+	w.selfUserGroups.Store(&groups)
 }
 
 // CustomEmoji returns this workspace's emoji name -> URL map, or an

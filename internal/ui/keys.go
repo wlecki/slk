@@ -19,6 +19,7 @@ type KeyMap struct {
 	Tab                 key.Binding
 	ShiftTab            key.Binding
 	ToggleSidebar       key.Binding
+	ToggleWorkspaceRail key.Binding
 	SidebarGrow         key.Binding
 	SidebarShrink       key.Binding
 	ToggleThread        key.Binding
@@ -75,6 +76,8 @@ type KeyMap struct {
 	ListReactions       key.Binding
 	UserProfile         key.Binding
 	Huddle              key.Binding
+	Suppress            key.Binding
+	Suppressed          key.Binding
 	WindowPrefix        key.Binding
 	WinSplit            key.Binding
 	WinVSplit           key.Binding
@@ -160,6 +163,7 @@ func DefaultKeyMap() KeyMap {
 		ThemePrev:           key.NewBinding(key.WithKeys("alt+shift+y", "alt+Y", "alt+shift+Y"), key.WithHelp("alt+shift+y", "prev theme (per workspace)")),
 		Compact:             key.NewBinding(key.WithHelp(":compact", "Toggle compact (IRC-like) style")),
 		PresenceMenu:        key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "set status")),
+		ToggleWorkspaceRail: key.NewBinding(key.WithKeys("ctrl+g"), key.WithHelp("ctrl+g", "toggle workspace rail")),
 		ToggleSection:       key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "toggle section")),
 		NavBack:             key.NewBinding(key.WithKeys("ctrl+h"), key.WithHelp("ctrl+h", "navigate back")),
 		NavForward:          key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "navigate forward")),
@@ -174,6 +178,9 @@ func DefaultKeyMap() KeyMap {
 		ListReactions:  key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "list reactions")),
 		UserProfile:    key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "show author's profile")),
 		Huddle:         key.NewBinding(key.WithKeys("H"), key.WithHelp("H / :huddle", "copy huddle link")),
+		// Keyless, like MarksList: dispatched from the command registry.
+		Suppress:   key.NewBinding(key.WithHelp(":suppress", "hide this author's messages")),
+		Suppressed: key.NewBinding(key.WithHelp(":suppressed", "list hidden authors")),
 		// Window commands (design §4). WindowPrefix is the only real
 		// binding; the Win* entries are keyless help-only bindings
 		// (same trick as WorkspaceFinder above) — actual dispatch of
