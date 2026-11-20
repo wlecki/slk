@@ -349,13 +349,15 @@ func (a *App) insertComposerEmpty() bool {
 // (see insertComposerEmpty). Keys people repeat to delete text stay out,
 // so one press too many cannot change mode: Ctrl+W (delete word, the
 // window prefix), Ctrl+H (backspace, back) and Ctrl+K (delete to line
-// end, forward), and with Ctrl+K its forward twin Ctrl+L. So do Ctrl+E
+// end, the channel switcher), and Ctrl+L, the forward twin of Ctrl+H.
+// FuzzyFinder is left out for Ctrl+K; FuzzyFinderAlt (Ctrl+T, Ctrl+P)
+// still opens the switcher from here. So do Ctrl+E
 // (external editor) and Ctrl+O (broadcast), which are composer keys, and
 // Ctrl+U / Ctrl+D, which scroll a pane and would leave insert mode for
 // no gain. The rest work again after Esc.
 func (a *App) isAppHotkey(msg tea.KeyMsg) bool {
 	return key.Matches(msg,
-		a.keys.FuzzyFinder, a.keys.FuzzyFinderAlt,
+		a.keys.FuzzyFinderAlt,
 		a.keys.NewMessage, a.keys.ActivityView,
 		a.keys.WorkspaceSearch, a.keys.PresenceMenu,
 		a.keys.ToggleSidebar, a.keys.ToggleThread,

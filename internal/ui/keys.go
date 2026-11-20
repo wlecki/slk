@@ -107,8 +107,11 @@ func DefaultKeyMap() KeyMap {
 		SidebarGrow:     key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "widen sidebar")),
 		SidebarShrink:   key.NewBinding(key.WithKeys("["), key.WithHelp("[", "narrow sidebar")),
 		ToggleThread:    key.NewBinding(key.WithKeys("ctrl+]"), key.WithHelp("ctrl+]", "toggle thread")),
-		FuzzyFinder:     key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "switch channel")),
-		FuzzyFinderAlt:  key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "switch channel")),
+		// ctrl+k is Slack's quick switcher key. It is kept apart from
+		// FuzzyFinderAlt because insert mode leaves ctrl+k to the
+		// composer (delete to line end), see isAppHotkey.
+		FuzzyFinder:     key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", "switch channel")),
+		FuzzyFinderAlt:  key.NewBinding(key.WithKeys("ctrl+t", "ctrl+p"), key.WithHelp("ctrl+t / ctrl+p", "switch channel")),
 		Top:             key.NewBinding(key.WithKeys("g"), key.WithHelp("gg", "top")),
 		Bottom:          key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "bottom")),
 		PageUp:          key.NewBinding(key.WithKeys("pgup"), key.WithHelp("PgUp", "page up")),
@@ -159,10 +162,8 @@ func DefaultKeyMap() KeyMap {
 		PresenceMenu:        key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "set status")),
 		ToggleSection:       key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "toggle section")),
 		NavBack:             key.NewBinding(key.WithKeys("ctrl+h"), key.WithHelp("ctrl+h", "navigate back")),
-		// ctrl+k was the original forward key. It stays bound for
-		// existing users but is left out of the help overlay.
-		NavForward: key.NewBinding(key.WithKeys("ctrl+l", "ctrl+k"), key.WithHelp("ctrl+l", "navigate forward")),
-		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "show keybindings")),
+		NavForward:          key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "navigate forward")),
+		Help:                key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "show keybindings")),
 		// Keyless, like MarksList: :help is dispatched from the
 		// command registry. Kept apart from Help so the status-bar
 		// hint, built from Help's key, stays "? for keybindings".

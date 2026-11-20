@@ -1469,7 +1469,7 @@ func TestInsertModeHotkeysOnEmptyComposer(t *testing.T) {
 			wantMode: ModeInsert,
 		},
 		{
-			name: "ctrl+k on an empty composer stays in insert (delete to line end, not forward)",
+			name: "ctrl+k on an empty composer stays in insert (delete to line end, not the switcher)",
 			opts: insertOpts(),
 			setup: func(t *testing.T, a *App) {
 				stay(a)
