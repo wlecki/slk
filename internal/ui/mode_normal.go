@@ -294,6 +294,7 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 		a.SetMode(ModePresenceMenu)
 
 	case key.Matches(msg, a.keys.FuzzyFinder) || key.Matches(msg, a.keys.FuzzyFinderAlt):
+		a.channelFinder.SetUnread(a.sidebar.UnreadChannelIDs())
 		a.channelFinder.Open()
 		a.SetMode(ModeChannelFinder)
 
@@ -348,6 +349,12 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 
 	case key.Matches(msg, a.keys.OpenLink):
 		return a.openLinksOfSelected()
+
+	case key.Matches(msg, a.keys.OpenSlackLink):
+		a.slackLinkInput = ""
+		a.slackLinkError = ""
+		a.SetMode(ModeOpenSlackLink)
+		return nil
 
 	case a.view == ViewActivity && key.Matches(msg, a.keys.ActivityUnread):
 		return func() tea.Msg { return ActivityToggleUnreadMsg{} }
