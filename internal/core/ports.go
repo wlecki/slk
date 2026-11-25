@@ -310,6 +310,14 @@ type ChannelService interface {
 	// ChannelMessagingCapabilityMsg. Costs a round trip, so only call
 	// it for a channel already known to be an app/bot DM.
 	MessagingCapability(channelID ids.ChannelID) Cmd
+
+	// SetStarred stars or un-stars channelID's conversation in teamID's
+	// workspace (stars.add / stars.remove). The team is the one the
+	// user was LOOKING at when the request was made, not whichever the
+	// backend holds active by the time the command runs. Returns a Cmd
+	// whose resolved Msg is ChannelStarSetMsg; the requesting path
+	// applies the sidebar move optimistically and reverts on the error.
+	SetStarred(teamID ids.TeamID, channelID ids.ChannelID, starred bool) Cmd
 }
 
 // SearchService runs message searches. SearchChannel queries the local
@@ -488,4 +496,10 @@ type ImageFetcher interface {
 	Prerendered(key string, cellTarget image.Point, proto imgpkg.Protocol) (imgpkg.Render, bool)
 	ConfigurePrerender(proto imgpkg.Protocol)
 	ConfigurePrerenderKitty(kr *imgpkg.KittyRenderer)
+	// InvalidatePrerender drops the prerendered encoded-image cache.
+	// The cache is keyed by (key, cellTarget, proto), so a cell-size
+	// change in pixels leaves entries whose encoded bytes no longer
+	// match their cell footprint; the host calls this when it
+	// re-points the image encoders (CellMetricsChangedMsg's handler).
+	InvalidatePrerender()
 }

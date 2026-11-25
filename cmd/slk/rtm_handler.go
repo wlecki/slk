@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/gammons/slk/internal/cache"
@@ -66,6 +67,20 @@ type rtmEventHandler struct {
 	// ReadStateChangedMsg whose receiver refreshes every workspace's
 	// dot, so the sibling list itself is never fanned out over.
 	gridSiblings func() []string
+
+	// starWake is the shared pending-events wake channel: the star
+	// queue below and the user resolver's resolved-peer queue both
+	// signal it, and PendingEvents hands it to the client's dispatcher
+	// so OnPendingEvents drains both on the serialized event owner.
+	// Nil in tests constructed without wiring, which disables the wake
+	// (the dispatcher treats a nil channel as no pending handler).
+	// starMu guards starApplies, the queued star-state changes a
+	// successful stars.add / stars.remove hands over from the command
+	// goroutine: the rows it updates (wsCtx.Channels) belong to this
+	// handler's event owner.
+	starWake    chan struct{}
+	starMu      sync.Mutex
+	starApplies []starApply
 
 	// backfillGate enforces a 30 s minimum between reconnect-driven
 	// catch-up passes. Per-handler so each workspace has its own gate.
@@ -199,6 +214,9 @@ func (h *rtmEventHandler) OnMessage(channelID, userID, ts, text, threadTS, subty
 	// Key the row on the bot_id and resolve its avatar/name via bots.info,
 	// mirroring the fetch path's messageAuthor (cmd/slk/users.go).
 	authorID := h.messageAuthor(userID, botID, username)
+	if h.wsCtx != nil {
+		h.wsCtx.Subteams.Request(subteamIDsInMessage(text, blocks, attachments))
+	}
 	room := h.takeRoom(channelID, ts)
 	// Synchronous, so the channel's row and type exist before the writes
 	// below. The UI hears of it only after the unread write.

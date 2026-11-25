@@ -12,21 +12,15 @@ import (
 	"github.com/gammons/slk/internal/ui"
 )
 
-// activityClient returns the client the Activity closures should run on
-// for wctx's workspace. A Grid member-workspace token is the one session
-// Slack rejects activity.feed, messages.list and activity.markRead for
-// (team_is_restricted, the same restriction client.counts hits); the
-// org-level session on the same grid serves them, and the web client's
-// Activity view is org-wide anyway. The sibling must also be the SAME
-// authenticated user: browser credentials for a second account on the
-// grid connect as sibling sessions too, and routing this workspace's
-// activity through one of those would read (and markRead) another
-// user's feed. Falls back to the workspace's own client when no
-// matching org-level sibling is connected, so the failure surfaces
-// as it does today rather than as a silent empty view with no diagnosis.
-func activityClient(router *workspaceRouter, wctx *WorkspaceContext) *slackclient.Client {
-	if !wctx.Client.IsGridMember() {
-		return wctx.Client
+// sameUserOrgClient returns the org-level session of the same
+// authenticated user on wctx's grid, or nil. The same-user rule is the
+// boundary that keeps browser credentials for a second account on the
+// grid (which connect as sibling sessions too) from standing in for
+// this user's org session. Nil also when wctx is not a grid member, no
+// org-level sibling is connected, or wctx has no client.
+func sameUserOrgClient(router *workspaceRouter, wctx *WorkspaceContext) *slackclient.Client {
+	if wctx.Client == nil || !wctx.Client.IsGridMember() {
+		return nil
 	}
 	ent, user := wctx.Client.EnterpriseID(), wctx.Client.UserID()
 	for _, sibling := range router.All() {
@@ -36,6 +30,20 @@ func activityClient(router *workspaceRouter, wctx *WorkspaceContext) *slackclien
 		if sibling.Client.EnterpriseID() == ent && sibling.Client.UserID() == user {
 			return sibling.Client
 		}
+	}
+	return nil
+}
+
+// orgOrOwnClient returns the client an org-served call should run on
+// for wctx's workspace: the same-user org session when one is connected,
+// else the workspace's own. A member-workspace token is the one session
+// Slack rejects org-wide endpoints for (team_is_restricted: activity,
+// blocks.actions, the app-home conversations.info). Falling back to the
+// workspace's client keeps the failure visible as it is today, rather
+// than silently doing nothing.
+func orgOrOwnClient(router *workspaceRouter, wctx *WorkspaceContext) *slackclient.Client {
+	if org := sameUserOrgClient(router, wctx); org != nil {
+		return org
 	}
 	return wctx.Client
 }
@@ -55,7 +63,7 @@ func activityFetchFunc(router *workspaceRouter) core.ActivityFetchFunc {
 		}
 		fetchCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		client := activityClient(router, wctx)
+		client := orgOrOwnClient(router, wctx)
 		// The feed came off the org session, so it is org-wide: it
 		// holds items whose conversations live in other grid
 		// workspaces, which this workspace cannot open (its channel
@@ -162,7 +170,7 @@ func activityHydrateFunc(router *workspaceRouter) core.ActivityHydrateFunc {
 		}
 		fetchCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		bodies, err := activityClient(router, wctx).GetActivityMessages(fetchCtx, refs)
+		bodies, err := orgOrOwnClient(router, wctx).GetActivityMessages(fetchCtx, refs)
 		if err != nil {
 			log.Printf("Warning: GetActivityMessages(%s): %v", teamIDStr, err)
 			// nil = keep whatever bodies we already have.
@@ -187,7 +195,7 @@ func activitySetReadFunc(router *workspaceRouter) core.ActivitySetReadFunc {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := activityClient(router, wctx).SetActivityRead(ctx, item.Type, item.Key, item.FeedTS, read); err != nil {
+		if err := orgOrOwnClient(router, wctx).SetActivityRead(ctx, item.Type, item.Key, item.FeedTS, read); err != nil {
 			log.Printf("Warning: SetActivityRead(%s, %s, read=%v): %v", teamIDStr, item.Key, read, err)
 			msg.Err = err
 		}
