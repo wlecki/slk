@@ -248,10 +248,11 @@ func reduceWorkspaceReady(a *App, m WorkspaceReadyMsg) tea.Cmd {
 	// delivers InitialActive=true twice.
 	if m.InitialActive && a.bootstrap.ClaimInitialActive() {
 		a.view = ViewChannels
-		a.sidebar.SetThreadsActive(false)
+		a.sidebar.ClearActiveView()
 		a.threadsView.SetSummaries(nil)
 		a.sidebar.SetThreadsUnreadCount(0)
-		a.sidebar.SetActivityActive(false)
+		a.draftsView.SetRows(nil)
+		a.sidebar.SetDraftsCount(len(a.drafts.rows[m.TeamID]))
 		a.activityView.SetItems(nil)
 		a.activityView.SetBodies(nil)
 		// Same as the switch arm: the workspace's stored activity
@@ -271,6 +272,7 @@ func reduceWorkspaceReady(a *App, m WorkspaceReadyMsg) tea.Cmd {
 			a.sidebar.SetWidth(m.SidebarWidth)
 		}
 		a.sidebar.SetSectionsProvider(m.SectionsProvider)
+		a.sidebar.SetSectionDefaults(m.SectionDefaults)
 		// Before the lists below, so they are filtered on first build.
 		a.SetDeactivatedUsers(m.DeactivatedUsers, m.DeactivatedSeq)
 		a.setChannels(m.Channels, m.ChannelNames)
@@ -330,6 +332,9 @@ func reduceWorkspaceReady(a *App, m WorkspaceReadyMsg) tea.Cmd {
 		batch = append(batch, func() tea.Msg {
 			return activity.Fetch(team, activityFeedPageLimit, unreadOnly)
 		})
+		// Same reasoning as the switch arm: reload now that this
+		// workspace is active, so restore/vanish-clear apply.
+		batch = append(batch, a.loadDraftsCmd(m.TeamID))
 	}
 	// Initial threads-list fetch fires for every workspace as it
 	// becomes ready; the result is gated by ThreadsListLoadedMsg's
@@ -395,6 +400,14 @@ func reduceWorkspaceSwitched(a *App, m WorkspaceSwitchedMsg) tea.Cmd {
 		// below clears the selections.
 		a.navHistory.UpdateCurrent(a.activeTeamID, a.currentPosition())
 	}
+	if a.activeTeamID != "" && a.activeTeamID != m.TeamID {
+		// Before setChannels/SetUserNames below replace the composers'
+		// mention data with the incoming workspace's, remember the
+		// outgoing workspace's unsynced slots translated with its own
+		// names, so draft sync can still save them correctly while this
+		// other workspace is active (see draftWire).
+		a.rememberDraftWire(a.activeTeamID)
+	}
 	a.cancelEdit()
 	// Detach the main composer from the outgoing workspace's channel
 	// so its draft (text + attachments) is keyed and preserved rather
@@ -409,10 +422,11 @@ func reduceWorkspaceSwitched(a *App, m WorkspaceSwitchedMsg) tea.Cmd {
 	// only fall back to the Threads row when the new workspace
 	// has no channels at all.
 	a.view = ViewChannels
-	a.sidebar.SetThreadsActive(false)
-	a.sidebar.SetActivityActive(false)
+	a.sidebar.ClearActiveView()
 	a.threadsView.SetSummaries(nil)
 	a.sidebar.SetThreadsUnreadCount(0)
+	a.draftsView.SetRows(nil)
+	a.sidebar.SetDraftsCount(len(a.drafts.rows[m.TeamID]))
 	a.activityView.SetItems(nil)
 	a.activityView.SetBodies(nil)
 	// The incoming workspace's badge is its stored activity total, not
@@ -441,6 +455,7 @@ func reduceWorkspaceSwitched(a *App, m WorkspaceSwitchedMsg) tea.Cmd {
 	a.SetMode(ModeNormal)
 	a.compose.Blur()
 	a.sidebar.SetSectionsProvider(m.SectionsProvider)
+	a.sidebar.SetSectionDefaults(m.SectionDefaults)
 	// Forget the previous workspace's live DM presence before loading
 	// the new one, so its cache-seeded item presence isn't overwritten
 	// by a stale peer from the workspace we're leaving. The new
@@ -550,6 +565,11 @@ func reduceWorkspaceSwitched(a *App, m WorkspaceSwitchedMsg) tea.Cmd {
 	if m.AfterSwitch != nil {
 		batch = append(batch, m.AfterSwitch)
 	}
+	// Reload this workspace's drafts now that it is active: restore and
+	// vanish-clear only run for the active workspace's list
+	// (reduceDraftsLoaded), so a list that arrived while this one was
+	// in the background never applied. nil when sync is off.
+	batch = append(batch, a.loadDraftsCmd(m.TeamID))
 	return tea.Batch(batch...)
 }
 

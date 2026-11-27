@@ -70,6 +70,10 @@ func (p *pendingLinkNav) wrapThreadLoad(cmd tea.Cmd, authoritative bool, loads i
 }
 
 var reduceLinks reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
+	if m, ok := msg.(OpenSlackLinkMsg); ok {
+		a.dismissForExternalOpen()
+		return a.openFinderPermalink(m.URL), true
+	}
 	if dropped, ok := msg.(finderPermalinkDroppedMsg); ok {
 		// The workspace switch the finder asked for produced nothing.
 		// A newer paste has its own request; leave that one waiting.
@@ -247,7 +251,10 @@ func (a *App) applyLocation(loc Location, fromHistory bool) (tea.Cmd, bool) {
 		return nil, false
 	}
 	a.pendingLinkNav = &pendingLinkNav{Location: loc}
-	if !fromHistory && string(loc.ChannelID) == a.activeChannelID {
+	// A channel-only location (a channel mark) always reopens: the buffer
+	// may be an older permalink window that never reaches the newest message.
+	channelOnly := loc.MessageTS == "" && loc.ThreadTS == ""
+	if !fromHistory && !channelOnly && string(loc.ChannelID) == a.activeChannelID {
 		// Already viewing the channel; unless its fetch is still
 		// running (below), the loaded buffer is as good as it gets,
 		// so complete authoritatively right now.
@@ -260,6 +267,7 @@ func (a *App) applyLocation(loc Location, fromHistory bool) (tea.Cmd, bool) {
 		// thread-bearing location re-focuses the thread panel below,
 		// via openThreadForPermalink.
 		a.view = ViewChannels
+		a.sidebar.ClearActiveView()
 		if a.threadVisible {
 			// ChannelSelectedMsg closes the thread panel on every
 			// channel switch, and the in-place path has to as well —
@@ -317,7 +325,7 @@ func (a *App) completePendingLinkNav(channelID string, authoritative bool) tea.C
 		return nil
 	}
 	a.view = ViewChannels
-	a.sidebar.SetThreadsActive(false)
+	a.sidebar.ClearActiveView()
 	a.lastOpenedChannelID = ""
 	a.lastOpenedThreadTS = ""
 	a.focusedPanel = PanelMessages
@@ -421,4 +429,25 @@ func (a *App) permalinkThreadParent(channelID, threadTS string, knownReply bool)
 	}
 
 	return parent
+}
+
+// dismissForExternalOpen clears what is on screen before a jump that
+// comes from outside the TUI (`slk --open`), the way Esc would: nothing
+// shown belongs to that jump, and an overlay left drawn would cover the
+// destination or keep taking keys. The image preview and the confirm
+// prompt are drawn independently of the mode, so SetMode alone does not
+// close them. A dismissed prompt is declined; queued action dialogs stay
+// queued.
+func (a *App) dismissForExternalOpen() {
+	a.preview.Close()
+	if a.confirmPrompt.IsVisible() {
+		a.confirmPrompt.Close()
+		a.clearShownPrompt()
+	}
+	if a.mode == ModeOpenSlackLink {
+		a.clearSlackLink()
+	}
+	if a.mode != ModeNormal {
+		a.SetMode(ModeNormal)
+	}
 }

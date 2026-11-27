@@ -57,6 +57,9 @@ type modalClickTarget struct {
 	activation tea.KeyMsg       // nil when a row click has no activation (help)
 	point      pointClickable   // nil unless the modal has a point hot spot
 	onPoint    func() tea.Cmd   // set: a point hit calls this instead of synthesising activation
+	// onInside runs for a left click inside the box that missed every
+	// point target: the app dialog starts a text selection there.
+	onInside func(localX, localY int) tea.Cmd
 }
 
 // activeModalClickTarget resolves the modal addressed by the current
@@ -76,12 +79,17 @@ func (a *App) activeModalClickTarget() (modalClickTarget, bool) {
 		return modalClickTarget{box: &a.themeSwitcher, click: &a.themeSwitcher, activation: enter}, true
 	case ModePresenceMenu:
 		return modalClickTarget{box: &a.presenceMenu, click: &a.presenceMenu, activation: enter}, true
+	case ModeStatusDialog:
+		// A click picks when the status clears; Enter still sets it.
+		return modalClickTarget{box: &a.statusDialog, click: &a.statusDialog, activation: nil}, true
 	case ModeReactionPicker:
 		return modalClickTarget{box: a.reactionPicker, click: a.reactionPicker, activation: enter}, true
 	case ModeNewMessage:
 		return modalClickTarget{box: &a.newMessagePicker, click: &a.newMessagePicker, activation: space}, true
 	case ModeMarks:
 		return modalClickTarget{box: &a.marksOverlay, click: &a.marksOverlay, activation: enter}, true
+	case ModeDrafts:
+		return modalClickTarget{box: &a.draftList, click: &a.draftList, activation: enter}, true
 	case ModeSuppressed:
 		// A click only moves the highlight: removing is a key.
 		return modalClickTarget{box: &a.suppressList, click: &a.suppressList, activation: nil}, true
@@ -106,6 +114,21 @@ func (a *App) activeModalClickTarget() (modalClickTarget, bool) {
 					return copyProfileHuddle(a)
 				}
 				return copyProfileEmail(a)
+			},
+		}, true
+	case ModeAppView:
+		// A click on a button presses it directly; elsewhere in the
+		// body starts a text selection, which copies on release, and
+		// outside dismisses the dialog.
+		return modalClickTarget{
+			box:   &a.appView,
+			point: &a.appView,
+			onPoint: func() tea.Cmd {
+				return a.clickAppViewAction(a.appView.LastClickAction())
+			},
+			onInside: func(localX, localY int) tea.Cmd {
+				a.appView.BeginSelectionAt(localX, localY)
+				return nil
 			},
 		}, true
 	}
@@ -154,6 +177,9 @@ func reduceModalClick(a *App, m tea.MouseClickMsg) tea.Cmd {
 			if target.activation != nil {
 				return dispatchModeKey(a, target.activation)
 			}
+		}
+		if target.onInside != nil {
+			return target.onInside(m.X-startX, m.Y-startY)
 		}
 		return nil
 	}

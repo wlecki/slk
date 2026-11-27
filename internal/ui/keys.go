@@ -44,6 +44,7 @@ type KeyMap struct {
 	CopyPermalink       key.Binding
 	ForwardMessage      key.Binding
 	OpenPreview         key.Binding
+	LoadImages          key.Binding
 	OpenLink            key.Binding
 	OpenSlackLink       key.Binding
 	DownloadFile        key.Binding
@@ -54,6 +55,7 @@ type KeyMap struct {
 	MarkBackJump        key.Binding
 	MarksList           key.Binding
 	MarksDelete         key.Binding
+	DraftsList          key.Binding
 	NextUnread          key.Binding
 	PrevUnread          key.Binding
 	ActivityView        key.Binding
@@ -135,11 +137,12 @@ func DefaultKeyMap() KeyMap {
 		CopyPermalink:   key.NewBinding(key.WithKeys("Y", "C"), key.WithHelp("Y/C", "copy permalink")),
 		ForwardMessage:  key.NewBinding(key.WithKeys("F"), key.WithHelp("F", "forward message")),
 		OpenPreview:     key.NewBinding(key.WithKeys("O", "v"), key.WithHelp("O/v", "open image preview")),
+		LoadImages:      key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "load images the image_loading policy held back")),
 		OpenLink:        key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open link in message")),
 		OpenSlackLink:   key.NewBinding(key.WithKeys("P"), key.WithHelp("P", "open a pasted Slack message link")),
 		DownloadFile:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "download file in message")),
 		MarkUnread:      key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "mark unread")),
-		MarkSet:         key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "set mark")),
+		MarkSet:         key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "set mark (sidebar: conversation)")),
 		JumpMark:        key.NewBinding(key.WithKeys("'", "`"), key.WithHelp("'/`", "jump to mark")),
 		JumpToParent:    key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "go to the open thread's message in its channel")),
 		// Keyless help-only entries (same trick as WorkspaceFinder
@@ -150,6 +153,7 @@ func DefaultKeyMap() KeyMap {
 		MarkBackJump:   key.NewBinding(key.WithHelp("''", "back-jump to where you jumped from")),
 		MarksList:      key.NewBinding(key.WithHelp(":marks", "list marks")),
 		MarksDelete:    key.NewBinding(key.WithHelp(":delmarks", "delete marks by letter")),
+		DraftsList:     key.NewBinding(key.WithHelp(":drafts", "list Slack drafts")),
 		NextUnread:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "next unread channel")),
 		PrevUnread:     key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "prev unread channel")),
 		ActivityView:   key.NewBinding(key.WithKeys("ctrl+a"), key.WithHelp("ctrl+a / :activity", "open activity")),
@@ -201,7 +205,7 @@ func DefaultKeyMap() KeyMap {
 		// Alt+Enter sends and broadcasts in a single keystroke.
 		ToggleBroadcast: key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o / alt+enter", "also send reply to channel")),
 		// Shadows the textarea's own ctrl+e (LineEnd); "End" still works.
-		OpenInEditor: key.NewBinding(key.WithKeys("ctrl+e"), key.WithHelp("ctrl+e", "edit message in $EDITOR")),
+		OpenInEditor: key.NewBinding(key.WithKeys("ctrl+e"), key.WithHelp("ctrl+e", "edit or show message in $EDITOR")),
 		// Insert mode, either compose box: shows or hides the draft
 		// preview above the box being typed in. Sending or leaving
 		// insert mode closes it.

@@ -167,11 +167,39 @@ func TestParseActionsBlock(t *testing.T) {
 		slack.NewTextBlockObject("plain_text", "Click", false, false))
 	in := slack.Blocks{BlockSet: []slack.Block{slack.NewActionBlock("act", btn)}}
 	ab := Parse(in)[0].(ActionsBlock)
+	if ab.BlockID != "act" {
+		t.Errorf("BlockID = %q, want act", ab.BlockID)
+	}
 	if len(ab.Elements) != 1 {
 		t.Fatalf("Elements len = %d, want 1", len(ab.Elements))
 	}
-	if ab.Elements[0].Kind != "button" || ab.Elements[0].Label != "Click" {
-		t.Errorf("got %+v", ab.Elements[0])
+	el := ab.Elements[0]
+	if el.Kind != "button" || el.Label != "Click" || el.ActionID != "a" || el.Value != "v" {
+		t.Errorf("got %+v", el)
+	}
+	if ab.BlockID != "act" || ab.Elements[0].ActionID != "a" || ab.Elements[0].Value != "v" {
+		t.Errorf("identity = block %q action %q value %q, want act/a/v",
+			ab.BlockID, ab.Elements[0].ActionID, ab.Elements[0].Value)
+	}
+}
+
+func TestParseInputBlock(t *testing.T) {
+	el := slack.NewPlainTextInputBlockElement(
+		slack.NewTextBlockObject("plain_text", "Say why", false, false), "justification")
+	el.InitialValue = "security bugs"
+	label := slack.NewTextBlockObject("plain_text", "Justification", false, false)
+	hint := slack.NewTextBlockObject("plain_text", "Optional suggestions only", false, false)
+	in := slack.Blocks{BlockSet: []slack.Block{slack.NewInputBlock("b1", label, hint, el)}}
+
+	ib, ok := Parse(in)[0].(InputBlock)
+	if !ok {
+		t.Fatalf("got %T, want InputBlock", Parse(in)[0])
+	}
+	if ib.BlockID != "b1" || ib.Label != "Justification" || ib.Hint != "Optional suggestions only" {
+		t.Errorf("input = %+v, want the label, hint and id", ib)
+	}
+	if ib.Placeholder != "Say why" || ib.Value != "security bugs" || ib.ElementKind != "plain_text_input" {
+		t.Errorf("element = %+v, want the plain-text input's value and placeholder", ib)
 	}
 }
 

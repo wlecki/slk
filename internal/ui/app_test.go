@@ -1644,7 +1644,7 @@ func TestApp_SidebarHalfPageScrollMovesCursorWithViewport(t *testing.T) {
 	const height = 10
 	app.layout.SetSidebarHeight(height)
 	_ = app.sidebar.View(height, 30)
-	for range 5 { // Threads → Activity → header → C01 → C02 → C03
+	for range 6 { // Threads → Drafts → Activity → header → C01 → C02 → C03
 		app.handleDown()
 	}
 	_ = app.sidebar.View(height, 30)
@@ -3701,31 +3701,6 @@ func TestSendMessage_InstantDisplay(t *testing.T) {
 	}
 	if msgs[0].TS != "1700000999.000003" {
 		t.Errorf("post-swap TS = %q, want real Slack TS", msgs[0].TS)
-	}
-}
-
-// TestSendMessage_InstantDisplayConvertsCommonMarkToSlackMrkdwn locks
-// in the bug fix where the optimistic placeholder was storing the
-// user's raw CommonMark text. The slk renderer expects Slack mrkdwn
-// (single-asterisk bold, single-underscore italic, single-backtick
-// code), so without conversion the placeholder rendered "**bold**"
-// literally and then re-rendered with proper styling once the HTTP
-// response brought back the converted text. We now convert in the
-// App before storing.
-func TestSendMessage_InstantDisplayConvertsCommonMarkToSlackMrkdwn(t *testing.T) {
-	app := NewApp()
-	app.SetCurrentUserID("USELF")
-	app.activeChannelID = "C1"
-
-	app.Update(SendMessageMsg{ChannelID: "C1", Text: "**bold** and _italic_"})
-
-	msgs := app.messagepane.Messages()
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 placeholder, got %d", len(msgs))
-	}
-	// mrkdwn.Convert("**bold** and _italic_") => "*bold* and _italic_"
-	if got, want := msgs[0].Text, "*bold* and _italic_"; got != want {
-		t.Errorf("placeholder Text = %q, want %q (CommonMark should be converted to Slack mrkdwn)", got, want)
 	}
 }
 

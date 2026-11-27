@@ -53,6 +53,7 @@ import (
 	"github.com/gammons/slk/internal/ui/compose"
 	"github.com/gammons/slk/internal/ui/messages"
 	"github.com/gammons/slk/internal/ui/styles"
+	"github.com/gammons/slk/internal/ui/wintree"
 )
 
 // renderMessagesRegion returns the composed messages-region
@@ -105,6 +106,9 @@ func (a *App) renderMessagesRegion(frame panelLayoutFrame, themeVer int64, previ
 	if a.view == ViewThreads {
 		return a.renderThreadsViewPanel(msgWidth, msgBorder, contentHeight, msgFocused, msgLayoutKey)
 	}
+	if a.view == ViewDrafts {
+		return a.renderDraftsViewPanel(msgWidth, msgBorder, contentHeight, msgFocused, msgLayoutKey)
+	}
 	if a.view == ViewActivity {
 		return a.renderActivityViewPanel(msgWidth, msgBorder, contentHeight, msgFocused, msgLayoutKey)
 	}
@@ -155,6 +159,31 @@ func (a *App) renderThreadsViewPanel(msgWidth, msgBorder, contentHeight int, msg
 		msgWidth+msgBorder, contentHeight,
 	)
 	c.store(out, tvVersion, msgWidth, contentHeight, msgLayoutKey)
+	return out
+}
+
+// renderDraftsViewPanel handles the a.view == ViewDrafts branch: a
+// single bordered panel containing the drafts list, no compose. Cached
+// on draftsView.Version, the same way the Threads list is.
+func (a *App) renderDraftsViewPanel(msgWidth, msgBorder, contentHeight int, msgFocused bool, msgLayoutKey int64) string {
+	a.draftsView.SetFocused(msgFocused)
+	v := a.draftsView.Version()
+	c := &a.renderCache.draftsPanel
+	if c.hit(v, msgWidth, contentHeight, msgLayoutKey) {
+		return c.output
+	}
+	msgBorderStyle := styles.UnfocusedBorder.Width(msgWidth)
+	if msgFocused {
+		msgBorderStyle = styles.FocusedBorder.Width(msgWidth)
+	}
+	msgContentHeight := contentHeight - 2
+	a.layout.SetMsgHeight(msgContentHeight)
+	if msgContentHeight < 3 {
+		msgContentHeight = 3
+	}
+	body := messages.ReapplyBgAfterResets(a.draftsView.View(msgContentHeight, msgWidth-2), messages.BgANSI())
+	out := exactSize(msgBorderStyle.Render(body), msgWidth+msgBorder, contentHeight)
+	c.store(out, v, msgWidth, contentHeight, msgLayoutKey)
 	return out
 }
 
@@ -220,7 +249,7 @@ func (a *App) renderAppHomePanel(msgWidth, msgBorder, contentHeight int, msgFocu
 	if msgContentHeight < 3 {
 		msgContentHeight = 3
 	}
-	ctx := a.appHomeRenderContext()
+	ctx := a.appBlocksRenderContext()
 	ahView := a.appHome.View(msgContentHeight, msgWidth-2, ctx)
 	ahView = messages.ReapplyBgAfterResets(ahView, messages.BgANSI())
 	out := exactSize(
@@ -242,23 +271,18 @@ func (a *App) renderAppHomePanel(msgWidth, msgBorder, contentHeight int, msgFocu
 // these the entire panel renders without any border at all.
 func (a *App) renderChannelMessagesPanel(msgWidth, msgBorder, contentHeight int, msgFocused, composeFocused bool, msgLayoutKey int64) string {
 	var composeView string
+	popupRows := 0
 	readOnly := a.composeDisabled && !a.editing.IsActive()
 	if readOnly {
-		composeView = lipgloss.NewStyle().
-			Background(styles.Background).Foreground(styles.TextMuted).Italic(true).
-			Width(msgWidth - 2).
-			Render(a.composeBlockedText() + ".")
+		composeView = composeBlockedView(a.composeBlockedText(), msgWidth-2)
 	} else {
 		composeView = a.compose.View(msgWidth-2, composeFocused)
 		// Inline pickers stack above the compose box. They're
 		// mutually exclusive in compose.Update; emoji wins if
-		// somehow both are.
-		if pickerView := a.compose.EmojiPickerView(msgWidth - 2); pickerView != "" {
+		// somehow more than one is open.
+		if pickerView := a.compose.PopupView(msgWidth - 2); pickerView != "" {
+			popupRows = lipgloss.Height(pickerView)
 			composeView = pickerView + "\n" + composeView
-		} else if mentionView := a.compose.MentionPickerView(msgWidth - 2); mentionView != "" {
-			composeView = mentionView + "\n" + composeView
-		} else if channelView := a.compose.ChannelPickerView(msgWidth - 2); channelView != "" {
-			composeView = channelView + "\n" + composeView
 		}
 	}
 	// Background-colored spacer line above the compose box
@@ -271,11 +295,13 @@ func (a *App) renderChannelMessagesPanel(msgWidth, msgBorder, contentHeight int,
 	// (inner, less the typing row, this region and those 3 rows), up
 	// to its cap. Measured into composeHeight below, so a click on it
 	// lands in the compose region.
+	previewRows := 0
 	if !readOnly {
 		inner := contentHeight - 2
 		room := inner - 1 - lipgloss.Height(composeView) - 3
 		key := compose.RenderKey{Theme: styles.Version(), Pane: a.messagepane.Version(), Window: int64(a.focusedWin)}
 		if preview := a.draftPreview(&a.compose, a.messagepane, PanelMessages, msgWidth-2, draftPreviewRows(inner, room), key); preview != "" {
+			previewRows = lipgloss.Height(preview)
 			composeView = preview + "\n" + composeView
 		}
 	}
@@ -309,6 +335,7 @@ func (a *App) renderChannelMessagesPanel(msgWidth, msgBorder, contentHeight int,
 	// paneY has the top border already subtracted), so the first
 	// compose row passes the mouse router's >= check.
 	a.layout.SetMsgComposeTop(msgContentHeight + 1)
+	a.layout.SetMsgPopup(msgContentHeight+2+previewRows, popupRows)
 
 	// Cached top region: messages + top edge + side edges. The cache
 	// stores the SELECTION-FREE bordered output (see ViewBare +
@@ -322,22 +349,48 @@ func (a *App) renderChannelMessagesPanel(msgWidth, msgBorder, contentHeight int,
 	topBordered := a.renderMessagesTop(msgWidth, msgBorder, topHeight, msgContentHeight, topPanelVersion, topLayoutKey, msgFocused)
 	topBordered = a.messagepane.ApplySelectionToBordered(topBordered, 1, 1)
 
-	// Fresh bottom region: typing line + compose, with bottom
-	// edge. Same lipgloss/v2 quirk applies.
-	bottomBorderStyle := styles.UnfocusedBorder.Width(msgWidth).
-		BorderTop(false).BorderLeft(true).BorderRight(true).BorderBottom(true)
-	if msgFocused {
-		bottomBorderStyle = styles.FocusedBorder.Width(msgWidth).
-			BorderTop(false).BorderLeft(true).BorderRight(true).BorderBottom(true)
-	}
 	bottomInner := lipgloss.JoinVertical(lipgloss.Left, typingLine, composeView)
-	bottomInner = messages.ReapplyBgAfterResets(bottomInner, messages.BgANSI())
-	bottomBordered := exactSize(
-		bottomBorderStyle.Render(bottomInner),
-		msgWidth+msgBorder, bottomHeight+1, // +1 for bottom border edge
-	)
+	return topBordered + "\n" + paneBottom(bottomInner, msgWidth, msgBorder, bottomHeight+1, msgFocused)
+}
 
-	return topBordered + "\n" + bottomBordered
+// paneBottom is the fresh bottom region of a channel panel msgWidth
+// wide: inner (the typing row and the compose region) between the side
+// edges, over the bottom edge, rows tall with the edge.
+func paneBottom(inner string, msgWidth, msgBorder, rows int, focused bool) string {
+	// Same lipgloss/v2 quirk as the top region.
+	style := styles.UnfocusedBorder
+	if focused {
+		style = styles.FocusedBorder
+	}
+	style = style.Width(msgWidth).BorderTop(false).BorderLeft(true).BorderRight(true).BorderBottom(true)
+
+	inner = messages.ReapplyBgAfterResets(inner, messages.BgANSI())
+	return exactSize(style.Render(inner), msgWidth+msgBorder, rows)
+}
+
+// composeBlockedView takes the compose box's place in a conversation
+// that takes no messages.
+func composeBlockedView(why string, width int) string {
+	return lipgloss.NewStyle().
+		Background(styles.Background).Foreground(styles.TextMuted).Italic(true).
+		Width(width).
+		Render(why + ".")
+}
+
+// windowBottomView is what an unfocused channel window msgWidth wide
+// draws under its messages for ch: a blank typing row, the spacer and
+// ch's draft in a composer nobody types in (or the blocked notice),
+// the rows the focused panel draws there. The focused panel adds
+// popups and the draft preview, which only the user's typing there
+// opens.
+func (a *App) windowBottomView(ch wintree.Channel, msgWidth int) string {
+	blank := lipgloss.NewStyle().Background(styles.Background).Width(msgWidth - 2).Render("")
+
+	box := a.compose.DraftView(a.activeTeamID, ch.ID, "", ch.Name, msgWidth-2)
+	if why := a.sendBlockedReason(ch.ID); why != "" {
+		box = composeBlockedView(why, msgWidth-2)
+	}
+	return blank + "\n" + blank + "\n" + box
 }
 
 // renderMessagesTop is the cached top region of the channel

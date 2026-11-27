@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"time"
 
 	"github.com/gammons/slk/internal/core/blocks"
 	"github.com/gammons/slk/internal/ids"
@@ -100,9 +101,11 @@ func (i interactionAdapter) PressAttachmentAction(channelID ids.ChannelID, messa
 }
 
 // CommandServiceFuncs bundles the closures behind a CommandService. A nil
-// func makes its method return errors.ErrUnsupported.
+// Run makes Run return errors.ErrUnsupported. A nil List makes List
+// return nil.
 type CommandServiceFuncs struct {
-	Run func(teamID string, channelID ids.ChannelID, threadTS ids.ThreadTS, command, args string) error
+	Run  func(teamID string, channelID ids.ChannelID, threadTS ids.ThreadTS, command, args string) error
+	List func() []SlashCommand
 }
 
 // NewCommandService builds a CommandService from fns. Used by
@@ -118,6 +121,56 @@ func (c commandAdapter) Run(teamID string, channelID ids.ChannelID, threadTS ids
 		return errors.ErrUnsupported
 	}
 	return c.fns.Run(teamID, channelID, threadTS, command, args)
+}
+
+// DraftServiceFuncs bundles the closures behind a DraftService. A nil
+// func makes its method return errors.ErrUnsupported.
+type DraftServiceFuncs struct {
+	Load    func(teamID string) ([]Draft, error)
+	Save    func(key DraftKey, text string, edited time.Time, current func() bool) (DraftSaveResult, error)
+	Discard func(key DraftKey) error
+	Delete  func(teamID, draftID string) error
+}
+
+// NewDraftService builds a DraftService from fns. Used by
+// cmd/slk/main.go (production wiring) and tests.
+func NewDraftService(fns DraftServiceFuncs) DraftService { return draftAdapter{fns: fns} }
+
+type draftAdapter struct{ fns DraftServiceFuncs }
+
+func (d draftAdapter) Load(teamID string) ([]Draft, error) {
+	if d.fns.Load == nil {
+		return nil, errors.ErrUnsupported
+	}
+	return d.fns.Load(teamID)
+}
+
+func (d draftAdapter) Save(key DraftKey, text string, edited time.Time, current func() bool) (DraftSaveResult, error) {
+	if d.fns.Save == nil {
+		return DraftSaveResult{}, errors.ErrUnsupported
+	}
+	return d.fns.Save(key, text, edited, current)
+}
+
+func (d draftAdapter) Discard(key DraftKey) error {
+	if d.fns.Discard == nil {
+		return errors.ErrUnsupported
+	}
+	return d.fns.Discard(key)
+}
+
+func (d draftAdapter) Delete(teamID, draftID string) error {
+	if d.fns.Delete == nil {
+		return errors.ErrUnsupported
+	}
+	return d.fns.Delete(teamID, draftID)
+}
+
+func (c commandAdapter) List() []SlashCommand {
+	if c.fns.List == nil {
+		return nil
+	}
+	return c.fns.List()
 }
 
 // ThreadServiceFuncs is the closure bundle accepted by
@@ -591,13 +644,30 @@ func (e editorAdapter) TakeDraft(path string) (string, error) {
 func NewPresenceService(
 	setStatus func(action PresenceAction, snoozeMinutes int),
 	sendTyping func(channelID string),
+	setCustomStatus func(text, emoji string, expiration int64),
+	recentStatuses func(teamID string) ([]RecentStatus, error),
 ) PresenceService {
-	return presenceAdapter{setStatus: setStatus, sendTyping: sendTyping}
+	return presenceAdapter{setStatus: setStatus, sendTyping: sendTyping, setCustomStatus: setCustomStatus, recentStatuses: recentStatuses}
 }
 
 type presenceAdapter struct {
-	setStatus  func(action PresenceAction, snoozeMinutes int)
-	sendTyping func(channelID string)
+	setStatus       func(action PresenceAction, snoozeMinutes int)
+	sendTyping      func(channelID string)
+	setCustomStatus func(text, emoji string, expiration int64)
+	recentStatuses  func(teamID string) ([]RecentStatus, error)
+}
+
+func (p presenceAdapter) RecentStatuses(teamID string) ([]RecentStatus, error) {
+	if p.recentStatuses == nil {
+		return nil, nil
+	}
+	return p.recentStatuses(teamID)
+}
+
+func (p presenceAdapter) SetCustomStatus(text, emoji string, expiration int64) {
+	if p.setCustomStatus != nil {
+		p.setCustomStatus(text, emoji, expiration)
+	}
 }
 
 func (p presenceAdapter) SetStatus(action PresenceAction, snoozeMinutes int) {

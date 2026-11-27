@@ -223,6 +223,12 @@ type (
 	ThreadsListDirtyMsg struct {
 		TeamID string
 	}
+	// DraftsViewActivatedMsg is dispatched when the user picks the
+	// synthetic Drafts sidebar row. The App switches the message pane
+	// to the drafts list. Mirrors ThreadsViewActivatedMsg.
+	DraftsViewActivatedMsg struct {
+		KeepFocus bool // as on ChannelSelectedMsg
+	}
 	// ActivityViewActivatedMsg is dispatched when the user picks the
 	// synthetic Activity sidebar row (or runs :activity). The App
 	// switches the message pane to the Activity view and fetches the
@@ -263,6 +269,45 @@ type (
 		// the channel-open fetch), so a stale press's result cannot end
 		// the current press's progress dots.
 		Seq uint64
+	}
+	// AppViewOpenedMsg carries a modal an app opened for the user
+	// (view_opened). The App shows it over everything else; a view for
+	// a workspace no longer on screen is ignored.
+	AppViewOpenedMsg struct {
+		TeamID string
+		View   *core.AppView
+	}
+	// AppViewUpdatedMsg replaces the content of a modal that is already
+	// on screen (view_updated with an inline view). Unlike an open, it
+	// never brings back a dialog the user has dismissed; a different
+	// view ID is a pushed view and replaces the one shown.
+	AppViewUpdatedMsg struct {
+		TeamID string
+		View   *core.AppView
+	}
+	// AppViewLoadedMsg carries a modal's fetched content, either
+	// because Slack asked for a refresh (view_updated without an inline
+	// view) or after a pressed button. View is nil with Err nil when
+	// Slack no longer has the view: the App dismisses it. A non-nil Err
+	// leaves what is on screen alone.
+	AppViewLoadedMsg struct {
+		TeamID string
+		ViewID string
+		View   *core.AppView
+		Err    error
+		// Gen is the inline-content generation the fetch started at; a
+		// result from before a newer frame is dropped. Fetch orders the
+		// fetches among themselves: a fetch started before one already
+		// applied is dropped. Both are 0 for a message that did not
+		// come from a fetch slk started.
+		Gen   uint64
+		Fetch uint64
+	}
+	// AppViewNeedsRefreshMsg asks the App to fetch a modal's content
+	// after Slack signalled an update that carried no inline view.
+	AppViewNeedsRefreshMsg struct {
+		TeamID string
+		ViewID string
 	}
 	// ActivityBodiesLoadedMsg carries hydrated message bodies for the
 	// refs in a freshly loaded Activity page (fetched via messages.list
@@ -425,6 +470,9 @@ type (
 		// workspace. Nil means "use config-glob behavior" (the App's
 		// sidebar reverts to its existing name-keyed buckets).
 		SectionsProvider sidebar.SectionsProvider
+		// SectionDefaults are the workspace's [sections] ordering and
+		// collapse defaults, read-only, for the sidebar's config mode.
+		SectionDefaults map[string]sidebar.SectionDefault
 		// DefaultChannel is the workspace's configured default_channel,
 		// matched by matchChannelByName. It is opened on the first switch
 		// to the workspace in a session, and when the channel last viewed
@@ -531,6 +579,9 @@ type (
 		// workspace. Nil means "use config-glob behavior" (the App's
 		// sidebar reverts to its existing name-keyed buckets).
 		SectionsProvider sidebar.SectionsProvider
+		// SectionDefaults are the workspace's [sections] ordering and
+		// collapse defaults, read-only, for the sidebar's config mode.
+		SectionDefaults map[string]sidebar.SectionDefault
 		// InitialActive is true for exactly one WorkspaceReadyMsg per
 		// program run: the workspace whose team ID matches the configured
 		// default_workspace, or — if no default is configured — the first
@@ -777,6 +828,14 @@ type AttachmentRemovedMsg struct {
 type OpenLinkMsg struct {
 	URL       string
 	Confirmed bool
+}
+
+// OpenSlackLinkMsg opens a Slack archive permalink sent from outside the
+// TUI (`slk --open`). It takes the Open Slack link dialog's path: in-app
+// navigation, a switch to the workspace the link belongs to, or the
+// browser for anything slk cannot resolve.
+type OpenSlackLinkMsg struct {
+	URL string
 }
 
 // DownloadFileMsg requests download + OS-open of a file attachment.

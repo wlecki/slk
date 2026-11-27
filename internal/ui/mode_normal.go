@@ -91,6 +91,9 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 
 	switch {
 	case key.Matches(msg, a.keys.InsertMode):
+		if a.view == ViewDrafts && a.focusedPanel == PanelMessages {
+			return toastWithClear(a, "Open a draft to edit it", 2*time.Second)
+		}
 		if a.view == ViewAppHome && !(a.focusedPanel == PanelThread && a.threadVisible) {
 			// The messages region draws the Home tab, which has no
 			// composer: every path here (messages, sidebar or rail
@@ -175,7 +178,7 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 		// Activity. Mirrors :activity and clicking the sidebar row.
 		if a.view == ViewActivity {
 			a.view = ViewChannels
-			a.sidebar.SetActivityActive(false)
+			a.sidebar.ClearActiveView()
 			if a.activeChannelID != "" {
 				a.sidebar.SelectByID(a.activeChannelID)
 			}
@@ -318,8 +321,11 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 		pres, dndEnabled, dndEnd, _ := a.presence.Status(a.activeTeamID)
 		statusText, statusEmoji := a.presence.CustomStatus(a.currentUserID)
 		a.presenceMenu.SetCurrentCustomStatus(statusText, statusEmoji)
+		a.presenceMenu.SetCurrentStatusEmojiName(a.presence.CustomStatusEmojiName(a.currentUserID))
+		a.presenceMenu.SetRecent(a.recentStatuses[a.activeTeamID])
 		a.presenceMenu.OpenWith(header, pres, dndEnabled, dndEnd)
 		a.SetMode(ModePresenceMenu)
+		return a.fetchRecentStatuses()
 
 	case key.Matches(msg, a.keys.FuzzyFinder) || key.Matches(msg, a.keys.FuzzyFinderAlt):
 		a.channelFinder.SetUnread(a.sidebar.UnreadChannelIDs())
@@ -380,6 +386,9 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, a.keys.OpenPreview):
 		return a.openImagePreviewOfSelected()
 
+	case key.Matches(msg, a.keys.LoadImages):
+		return a.loadImagesOfSelected()
+
 	case key.Matches(msg, a.keys.OpenLink):
 		return a.openLinksOfSelected()
 
@@ -391,6 +400,12 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 
 	case a.view == ViewActivity && key.Matches(msg, a.keys.ActivityUnread):
 		return func() tea.Msg { return ActivityToggleUnreadMsg{} }
+
+	case a.view == ViewDrafts && a.focusedPanel == PanelMessages && key.Matches(msg, a.keys.DownloadFile):
+		// d deletes the highlighted draft, as it does in :drafts. The
+		// channel pane's "download file" binding is the same key, and
+		// that pane is not on screen.
+		return a.deleteSelectedDraft()
 
 	case key.Matches(msg, a.keys.DownloadFile):
 		return a.downloadFilesOfSelected()
@@ -448,6 +463,9 @@ func handleNormalMode(a *App, msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, a.keys.QuitConfirm):
 		a.openQuitConfirm()
 		return nil
+
+	case key.Matches(msg, a.keys.OpenInEditor):
+		return a.openMessageInEditor()
 
 	default:
 		// Number keys 1-9 switch workspaces.

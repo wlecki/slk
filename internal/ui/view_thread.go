@@ -53,18 +53,20 @@ func (a *App) renderThreadRegion(frame panelLayoutFrame, themeVer int64) string 
 	a.threadCompose.SetWidth(threadWidth - 2)
 
 	threadComposeView := a.threadCompose.View(threadWidth-2, threadComposeFocused)
-	if pickerView := a.threadCompose.EmojiPickerView(threadWidth - 2); pickerView != "" {
+	popupRows := 0
+	if pickerView := a.threadCompose.PopupView(threadWidth - 2); pickerView != "" {
+		popupRows = lipgloss.Height(pickerView)
 		threadComposeView = pickerView + "\n" + threadComposeView
-	} else if mentionView := a.threadCompose.MentionPickerView(threadWidth - 2); mentionView != "" {
-		threadComposeView = mentionView + "\n" + threadComposeView
-	} else if channelView := a.threadCompose.ChannelPickerView(threadWidth - 2); channelView != "" {
-		threadComposeView = channelView + "\n" + threadComposeView
 	}
 	threadComposeSpacer := lipgloss.NewStyle().Background(styles.Background).Width(threadWidth - 2).Render("")
 	threadComposeView = threadComposeSpacer + "\n" + threadComposeView
 	// Unlike the channel pane's typing row, no row is reserved for
 	// this: it appears only while an app is working on this thread.
 	statusLine := a.renderThreadBotStatusLine(threadWidth - 2)
+	statusRows := 0
+	if statusLine != "" {
+		statusRows = lipgloss.Height(statusLine)
+	}
 	// The draft preview goes between the status line and the spacer,
 	// sized as in the channel pane (no typing row here).
 	inner := contentHeight - 2
@@ -72,8 +74,10 @@ func (a *App) renderThreadRegion(frame panelLayoutFrame, themeVer int64) string 
 	if statusLine != "" {
 		room -= lipgloss.Height(statusLine)
 	}
+	previewRows := 0
 	key := compose.RenderKey{Theme: themeVer, Pane: a.threadPanel.Version()}
 	if preview := a.draftPreview(&a.threadCompose, a.threadPanel, PanelThread, threadWidth-2, draftPreviewRows(inner, room), key); preview != "" {
+		previewRows = lipgloss.Height(preview)
 		threadComposeView = preview + "\n" + threadComposeView
 	}
 	if statusLine != "" {
@@ -92,6 +96,7 @@ func (a *App) renderThreadRegion(frame panelLayoutFrame, themeVer int64) string 
 	// (top border subtracted), mirroring the channel pane's compose
 	// top.
 	a.layout.SetThreadComposeTop(threadContentHeight)
+	a.layout.SetThreadPopup(threadContentHeight+statusRows+previewRows+1, popupRows)
 
 	// Cached top region.
 	threadTopVersion := a.threadPanel.Version()

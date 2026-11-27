@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -264,7 +265,8 @@ func (m *Model) HandleAvatarReady(userID string) {
 // receiving a refresh of the current one), the unread boundary is cleared
 // so a fresh boundary can be set by the caller via SetLastReadTS.
 func (m *Model) SetThread(parent messages.MessageItem, replies []messages.MessageItem, channelID, threadTS string) {
-	if channelID != m.channelID || threadTS != m.threadTS {
+	sameThread := channelID == m.channelID && threadTS == m.threadTS
+	if !sameThread {
 		m.unreadBoundaryTS = ""
 	}
 	m.ClearSelection()
@@ -273,6 +275,14 @@ func (m *Model) SetThread(parent messages.MessageItem, replies []messages.Messag
 	m.channelID = channelID
 	m.threadTS = threadTS
 	replies, _, _ = messages.Visible(m.hide, replies)
+	// The fetch that follows a cached open often returns the replies
+	// already on screen. Their rendered cache is kept then, since a
+	// rebuild of a long thread blocks the UI for hundreds of ms. The
+	// parent is drawn every frame, so only the replies are compared. Any
+	// difference rebuilds everything, as before. So does active reaction
+	// navigation, whose highlight is in the cached rows of the reply that
+	// was selected, while the selection moves to the newest reply below.
+	keepCache := sameThread && !m.nav.Active && reflect.DeepEqual(replies, m.replies)
 	m.replies = replies
 	// Per the doc comment, the cursor starts at the bottom (newest reply)
 	// so a long thread opens scrolled to the latest activity rather than
@@ -288,6 +298,12 @@ func (m *Model) SetThread(parent messages.MessageItem, replies []messages.Messag
 	// previously-viewed thread's snapped selection skips the snap and leaves
 	// the viewport scrolled to the top. Mirrors messages.Model.SetMessages.
 	m.list.ResetSnap()
+	if keepCache {
+		m.layoutValid = false
+		m.chromeCacheValid = false
+		m.dirty()
+		return
+	}
 	m.InvalidateCache()
 }
 
@@ -1306,8 +1322,9 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 	if len(m.replies) == 0 {
 		// "No replies yet" under the parent. It goes through the list so
 		// a parent taller than the pane still scrolls; the scrollbar
-		// reflects the parent's own height. No snap and no selection
-		// overlay, as before (plan decision P1 for the totals); the
+		// reflects the parent's own height. No snap; the selection
+		// overlay follows applySelection like every other path, so a
+		// drag over the parent highlights while the mouse is held. The
 		// parent's image hits are translated so its image is clickable.
 		emptyHeight := max(replyAreaHeight-len(parent.Lines), 1)
 		empty := lipgloss.NewStyle().
@@ -1324,8 +1341,11 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 					return parentRendered.SixelRows
 				}
 				return nil
-			}, nil)
-		rows := m.list.Compose(frame, "", "", false)
+			}, nil,
+			func(i int) string {
+				return messages.MarginBgANSI(m.selected == parentSelected, m.focused, parentRendered.MentionsSelf)
+			})
+		rows := m.list.Compose(frame, "", "", applySelection)
 		return fitHeight(chrome+"\n"+strings.Join(rows, "\n"), height)
 	}
 
@@ -1387,7 +1407,7 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 				ColOffset:  1,
 				Hits:       append(r.Hits, w.LinkHits...),
 			})
-			m.cache = append(m.cache, messages.EntryPayload{SelSrc: w.SelSrc, ShortSrc: w.ShortSrc, Flushes: flushes, SixelRows: r.SixelRows})
+			m.cache = append(m.cache, messages.EntryPayload{SelSrc: w.SelSrc, ShortSrc: w.ShortSrc, Flushes: flushes, SixelRows: r.SixelRows, MentionsSelf: r.MentionsSelf})
 			m.replyIDToIdx[reply.TS] = i
 		}
 		m.cacheWidth = width
@@ -1424,27 +1444,35 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 	entries := make([]entrylist.Entry, 0, 2*len(m.replyEntries)+2)
 	entries = append(entries, parent)
 	// sixel is index-aligned with entries: the images of the parent and
-	// of each reply, nil for the decorations between them.
+	// of each reply, nil for the decorations between them. margins is
+	// aligned the same way: the background an avatar's sixel margin is
+	// repainted with, "" for entries with no avatar gutter.
 	sixel := make([][]messages.SixelImage, 0, cap(entries))
+	margins := make([]string, 0, cap(entries))
 	sixel = append(sixel, parentRendered.SixelRows)
+	margins = append(margins, messages.MarginBgANSI(m.selected == parentSelected, m.focused, parentRendered.MentionsSelf))
 	lastDate := messages.DateFromTS(m.parent.TS)
 	landmarkInserted := false
 	for i, e := range m.replyEntries {
 		if replyDate := messages.DateFromTS(m.replies[i].TS); replyDate != "" && replyDate != lastDate {
 			entries = append(entries, decoration(dateSeparatorStyle.Render("── "+messages.FormatDateSeparator(replyDate)+" ──")))
 			sixel = append(sixel, nil)
+			margins = append(margins, "")
 			lastDate = replyDate
 		}
 		if !landmarkInserted && newLandmark != "" && m.replies[i].TS > m.unreadBoundaryTS {
 			entries = append(entries, decoration(newLandmark))
 			sixel = append(sixel, nil)
+			margins = append(margins, "")
 			landmarkInserted = true
 		}
 		entries = append(entries, e)
 		sixel = append(sixel, m.cache[i].SixelRows)
+		margins = append(margins, messages.MarginBgANSI(m.selected == i, m.focused, m.cache[i].MentionsSelf))
 		if i < len(m.replyEntries)-1 {
 			entries = append(entries, decoration(replySeparator))
 			sixel = append(sixel, nil)
+			margins = append(margins, "")
 		}
 	}
 	m.list.SetEntries(entries, width, keepPosition)
@@ -1475,7 +1503,8 @@ func (m *Model) viewInternal(height, width int, applySelection bool) string {
 	// scrollbar.
 	frame := m.list.Layout(m.selected, m.cursorLines)
 	m.sixelPaints = messages.PlaceSixel(frame, m.list.Offsets(), m.list.YOffset(), replyAreaHeight,
-		func(i int) []messages.SixelImage { return sixel[i] }, nil)
+		func(i int) []messages.SixelImage { return sixel[i] }, nil,
+		func(i int) string { return margins[i] })
 	rows := m.list.Compose(frame, "", "", applySelection)
 	m.layoutValid = true
 	return fitHeight(chrome+"\n"+strings.Join(rows, "\n"), height)

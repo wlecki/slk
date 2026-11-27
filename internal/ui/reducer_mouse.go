@@ -35,6 +35,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/gammons/slk/internal/ui/compose"
 	"github.com/gammons/slk/internal/ui/messages"
 )
 
@@ -44,9 +45,73 @@ var reduceMouse reducerFunc = func(a *App, msg tea.Msg) (tea.Cmd, bool) {
 		return reduceMouseWheel(a, m), true
 
 	case tea.MouseClickMsg:
+		if m.Button == tea.MouseMiddle {
+			return reduceMiddleClick(a, m), true
+		}
 		return reduceMouseClick(a, m), true
 	}
 	return nil, false
+}
+
+// reduceMiddleClick pastes into the compose box under the cursor. slk
+// copies a drag selection on release, so the terminal's middle-click
+// paste is the natural partner; without this it is swallowed by the
+// app's mouse reporting and never reaches the terminal.
+//
+// A click anywhere but a compose box does nothing: middle-clicking a
+// message has no text field to paste into.
+func reduceMiddleClick(a *App, m tea.MouseClickMsg) tea.Cmd {
+	if a.bootstrap.IsLoading() || a.mode.IsModalOverlay() {
+		return nil
+	}
+	// A paste into a composer whose send is in flight would be thrown
+	// away when UploadResultMsg resets it.
+	if a.compose.Uploading() || a.threadCompose.Uploading() {
+		return nil
+	}
+	panel, _, py, ok := a.panelAt(m.X, m.Y)
+	if !ok || py < 0 {
+		return nil
+	}
+	var toThread bool
+	switch panel {
+	case PanelMessages:
+		if a.view != ViewChannels || a.layout.msgComposeTop <= 0 || py < a.layout.msgComposeTop {
+			return nil
+		}
+		// With splits, PanelAt maps the whole region to the focused
+		// window; only that window has a composer at msgComposeTop.
+		// The same interim guard as left clicks: swallow it.
+		if a.wins.Len() > 1 {
+			return nil
+		}
+	case PanelThread:
+		if !a.threadVisible || a.layout.threadComposeTop <= 0 || py < a.layout.threadComposeTop {
+			return nil
+		}
+		toThread = true
+	default:
+		return nil
+	}
+	want := PanelMessages
+	if toThread {
+		want = PanelThread
+	}
+	// A read-only channel composer refuses focus; do not fall through
+	// and paste into the thread composer the user was already in.
+	if !toThread && a.composeDisabled {
+		return toastWithClear(a, a.composeBlockedText(), 2*time.Second)
+	}
+	// Move focus to the clicked composer first; smartPaste pastes into
+	// whichever composer is focused.
+	if a.mode != ModeInsert || a.focusedPanel != want {
+		focus := a.beginInsertMode(toThread)
+		if a.focusedPanel != want {
+			return focus
+		}
+		return tea.Batch(focus, a.smartPaste())
+	}
+	return a.smartPaste()
 }
 
 // reduceMouseWheel handles tea.MouseWheelMsg. Extracted to keep the
@@ -84,6 +149,15 @@ func reduceMouseWheel(a *App, m tea.MouseWheelMsg) tea.Cmd {
 	if a.mode.IsModalOverlay() {
 		return scrollActiveModal(a, up)
 	}
+	// A wheel notch over an open emoji popup moves its highlight, not
+	// the pane behind it.
+	if a.mode == ModeInsert {
+		if panel, px, py, ok := a.panelAt(m.X, m.Y); ok {
+			if c, _, ok := a.composerPopupRow(panel, px, py); ok && c.ScrollEmojiPopup(up) {
+				return nil
+			}
+		}
+	}
 	// Lines moved per wheel notch -- configured via
 	// [appearance].mouse_wheel_lines (default 3, matches typical
 	// terminal behavior). Each pane's View() clamps its cursor to
@@ -115,6 +189,14 @@ func reduceMouseWheel(a *App, m tea.MouseWheelMsg) tea.Cmd {
 			}
 			// No openSelectedThreadCmd here: pure viewport scroll
 			// does not change the highlighted thread card.
+			return nil
+		}
+		if a.view == ViewDrafts {
+			if up {
+				a.draftsView.ScrollUp(wheelLinesPerNotch)
+			} else {
+				a.draftsView.ScrollDown(wheelLinesPerNotch)
+			}
 			return nil
 		}
 		if a.view == ViewActivity {
@@ -180,6 +262,37 @@ func scrollActiveModal(a *App, up bool) tea.Cmd {
 // reduceMouse dispatch switch because the arm is ~120 lines (four
 // panel-router branches: workspace rail, sidebar, messages pane,
 // thread panel; each with its own hit-test sequence).
+// composerPopupRow maps a pointer in a pane to the open composer
+// popup's content row. The popup geometry is window-local; in a split
+// the pointer from panelAt is messages-region-local, so translate it
+// through the focused window's rect first. The column check keeps a
+// wheel in the neighboring window from moving this popup's highlight.
+func (a *App) composerPopupRow(panel Panel, px, py int) (*compose.Model, int, bool) {
+	var c *compose.Model
+	var top, rows int
+	switch panel {
+	case PanelMessages:
+		if a.wins.Len() > 1 {
+			rect := a.layout.focusedWinRect
+			if rect.W == 0 || px < rect.X || px >= rect.X+rect.W || py < rect.Y || py >= rect.Y+rect.H {
+				return nil, 0, false
+			}
+			py -= rect.Y
+		}
+		top, rows = a.layout.MsgPopup()
+		c = &a.compose
+	case PanelThread:
+		top, rows = a.layout.ThreadPopup()
+		c = &a.threadCompose
+	default:
+		return nil, 0, false
+	}
+	if c == nil || rows <= 0 || py < top || py >= top+rows {
+		return nil, 0, false
+	}
+	return c, py - top - 1, true
+}
+
 // headerStarClick resolves a click against the header's star glyph,
 // split-aware. With one window the glyph hit-tests against the pane's
 // chrome directly; with splits, only a click inside the FOCUSED
@@ -187,7 +300,7 @@ func scrollActiveModal(a *App, up bool) tea.Cmd {
 // so a placeholder window PanelAt maps onto the live pane cannot fire
 // it. A hit toggles the star through the same path /star uses.
 func (a *App) headerStarClick(screenX, screenY int) (tea.Cmd, bool) {
-	if a.preview.Active() || a.view == ViewThreads || a.view == ViewActivity {
+	if a.preview.Active() || a.view == ViewThreads || a.view == ViewDrafts || a.view == ViewActivity {
 		return nil, false
 	}
 	panel, px, py, ok := a.panelAt(screenX, screenY)
@@ -268,6 +381,12 @@ func reduceMouseClick(a *App, m tea.MouseClickMsg) tea.Cmd {
 		if sidebarY < 0 {
 			return nil
 		}
+		// The sort control on the Direct Messages header flips the
+		// section's order without collapsing it.
+		if a.sidebar.HitTestSectionSort(sidebarY, x-a.layout.RailWidth()-1) {
+			a.sidebar.ToggleSortDMsByRecency()
+			return nil
+		}
 		if item, ok := a.sidebar.ClickAt(sidebarY); ok {
 			return func() tea.Msg {
 				return ChannelSelectedMsg{ID: item.ID, Name: item.Name, Type: item.Type}
@@ -282,6 +401,9 @@ func reduceMouseClick(a *App, m tea.MouseClickMsg) tea.Cmd {
 		// not to a click reads as a dead row.
 		if a.sidebar.IsThreadsSelected() {
 			return func() tea.Msg { return ThreadsViewActivatedMsg{} }
+		}
+		if a.sidebar.IsDraftsSelected() {
+			return func() tea.Msg { return DraftsViewActivatedMsg{} }
 		}
 		if a.sidebar.IsActivitySelected() {
 			return func() tea.Msg { return ActivityViewActivatedMsg{} }
@@ -344,24 +466,51 @@ func reduceMouseClick(a *App, m tea.MouseClickMsg) tea.Cmd {
 		// activityView; route the click through activityView.ClickAt so
 		// the cursor follows, then open the highlighted item (mirrors
 		// the ViewThreads branch and the j/k/Enter paths).
-		if a.view == ViewActivity {
+		if a.view == ViewDrafts {
 			panel, _, py, ok := a.panelAt(m.X, m.Y)
-			if ok && panel == PanelMessages && py >= 0 && a.activityView.ClickAt(py) {
-				if it, ok := a.activityView.SelectedItem(); ok {
-					team := a.activeTeamID
-					return func() tea.Msg { return ActivitySelectedMsg{TeamID: team, Item: it} }
+			if ok && panel == PanelMessages && py >= 0 && a.draftsView.ClickAt(py) {
+				return a.openSelectedDraft()
+			}
+			return nil
+		}
+		if a.view == ViewActivity {
+			panel, px, py, ok := a.panelAt(m.X, m.Y)
+			if ok && panel == PanelMessages && py >= 0 {
+				// A card's preview carries links; they open before the
+				// card's own select/open behavior.
+				if url, hit := a.activityView.HitTestLink(py, px); hit {
+					return func() tea.Msg { return OpenLinkMsg{URL: url} }
+				}
+				if a.activityView.ClickAt(py) {
+					if it, ok := a.activityView.SelectedItem(); ok {
+						team := a.activeTeamID
+						return func() tea.Msg { return ActivitySelectedMsg{TeamID: team, Item: it} }
+					}
 				}
 			}
 			return nil
 		}
-		// The App Home view fills the messages region too, and has no
-		// row selection for a click to follow: focus the region (done
-		// above) and leave the scroll position alone.
+		// The App Home view fills the messages region too: a click on one
+		// of its buttons presses it (the region focus is set above), any
+		// other click leaves the scroll position alone.
 		if a.view == ViewAppHome {
+			panel, px, py, ok := a.panelAt(m.X, m.Y)
+			if !ok || panel != PanelMessages || py < 0 {
+				return nil
+			}
+			if idx, ok := a.appHome.HitAction(py, px); ok {
+				return a.clickAppHomeAction(idx)
+			}
 			return nil
 		}
 		panel, px, py, ok := a.panelAt(m.X, m.Y)
 		if !ok || panel != PanelMessages || py < 0 {
+			return nil
+		}
+		// A click on an emoji autocomplete row inserts that emoji.
+		// The popup sits above the compose box and is part of the same
+		// bottom region.
+		if c, row, ok := a.composerPopupRow(PanelMessages, px, py); ok && c.ClickEmojiRow(row) {
 			return nil
 		}
 		// The compose region: a click there starts composing, the
@@ -434,8 +583,11 @@ func reduceMouseClick(a *App, m tea.MouseClickMsg) tea.Cmd {
 			return a.tryOpenActionPrompt()
 		}
 
-		// The thread pane's own compose region, same as the channel
-		// pane's above but targeting the thread compose.
+		// The thread pane's emoji popup and compose region, same as the
+		// channel pane's above but targeting the thread compose.
+		if c, row, ok := a.composerPopupRow(PanelThread, px, py); ok && c.ClickEmojiRow(row) {
+			return nil
+		}
 		if a.layout.threadComposeTop > 0 && py >= a.layout.threadComposeTop {
 			return a.beginInsertMode(true)
 		}

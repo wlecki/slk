@@ -37,7 +37,7 @@
 - Bracketed paste — paste multi-line text from the system clipboard without it being interpreted as keystrokes
 - Smart paste (`Ctrl+V`) — pastes a clipboard image as an attachment, or a copied file path as an attached file, or falls through to text. Multiple attachments + caption send together via Slack's V2 file-upload API. Note: use `Ctrl+V` (not your terminal's `Ctrl+Shift+V` paste shortcut) — terminal-initiated paste only delivers text, never image bytes.
 - CommonMark in compose: type `**bold**`, `~~strike~~`, `[label](url)`, `- list items`, `1. numbered`, or fenced ```code blocks``` and slk converts them on send to Slack's mrkdwn + rich_text format. Already-mrkdwn syntax (`*bold*`, `_italic_`, `~strike~`) passes through unchanged and receives the corresponding rich-text styling.
-- Unsent drafts stay with their conversation. Text and attachments are kept separately for each workspace, channel, DM and thread, and come back when you switch to it again. Drafts are in-session only — nothing is written to disk and nothing is synced to Slack — and a draft's attachments stay in memory until you send or remove them. While a file upload is in progress, navigation that would switch the composer is refused, so the upload's caption and attachments stay with the conversation they were sent from.
+- Unsent drafts stay with their conversation. Text and attachments are kept separately for each workspace, channel, DM and thread, and come back when you switch to it again. With `[compose] sync_drafts` (the default) the text is also Slack's own draft for that conversation: saved while you type, restored when you open it, and listed in the Drafts view. Attachments stay in memory until you send or remove them. While a file upload is in progress, navigation that would switch the composer is refused, so the upload's caption and attachments stay with the conversation they were sent from.
 
 ## Images
 
@@ -48,6 +48,8 @@
 - Lazy-loaded: images download only as they scroll into view
 - LRU cache at `~/.cache/slk/images/` (default 200 MB cap)
 - Inside tmux, slk falls back to half-block to avoid pixel-protocol pass-through pitfalls
+- Images from outside Slack are not fetched until you allow them: a link-preview or Block Kit image hosted anywhere but Slack's own CDN shows `[image from <host> not loaded · I to load]`, and `I` asks before contacting the host (which would learn your IP address and when you read the message). `[general] image_loading = "confirm"` asks for every image, `"off"` never loads message images; `trusted_image_hosts` adds hosts to load without asking
+- Image decoding is bounded (32 MB download, 25 megapixels), so an image that declares a huge canvas cannot exhaust memory
 - Configurable via `[appearance] image_protocol` (`auto` / `kitty` / `sixel` / `halfblock` / `off`) and `max_image_rows`
 
 See [[Terminal Compatibility|Terminal-Compatibility]] for which protocol your terminal supports.
@@ -79,9 +81,26 @@ See [[Terminal Compatibility|Terminal-Compatibility]] for which protocol your te
   v1 is computed from the local SQLite cache, so threads from channels
   you have not yet opened in slk will not appear until they are seen.
 
+## Drafts
+
+- **Drafts view** (`✎ Drafts` in the sidebar, directly below Threads): the
+  active workspace's Slack drafts, newest first. The count beside the row is
+  how many there are, drawn like the Threads unread count, and hidden when
+  there are none. Open it from the sidebar. With `[compose] sync_drafts` off
+  the row stays and selecting it says so.
+- Each row names the conversation (`#channel`, a DM, or `#channel › thread`),
+  how long ago it changed, and one line of the draft. A scheduled draft, one
+  with files, or one saved from the composer is marked.
+- `j` / `k`, `gg` / `G` and paging move the selection the same way as the
+  Threads view. `Enter` opens that channel or thread with the draft in the
+  composer. `d` asks before deleting it. With nothing to list, the pane says
+  `no drafts`, the same shape as the Threads view's `no threads`.
+- `:drafts` opens the same list as a dialog (Enter jumps, `d` deletes, Esc
+  closes).
+
 ## Activity
 
-- **Activity view** (`◉ Activity` in the sidebar, below Threads): the same
+- **Activity view** (`◉ Activity` in the sidebar, below Drafts): the same
   feed as the Activity tab in the official client — @mentions (including
   `@here`/`@channel`, user groups and keywords), replies in threads you
   follow, reactions to your messages, and DMs. Open it from the sidebar,
@@ -114,7 +133,8 @@ See [[Terminal Compatibility|Terminal-Compatibility]] for which protocol your te
 - Three-panel layout: workspace rail, channel sidebar, message pane
 - Public (`#`), private (`◆`), DM (`●`/`○` for presence, `⊘` while the other person is in Do Not Disturb), and group DM channels
 - **Slack-native sidebar sections** — slk reads your sections directly from Slack and reflects them live: section names, emoji, linked-list order, and channel/DM membership are kept in sync via the same WebSocket events the official client uses. Reorder, rename, create, or delete sections in any other Slack client; slk catches up within a couple seconds. Read-only: section editing still happens in the official client. Falls back to glob-based config sections when disabled or if the API is unavailable.
-- Collapsible sections — `Enter`/`Space` on a section header toggles it. A collapsed header shows aggregate unreads (`▸ Channels •3`). With Slack's sections every section starts expanded; with `[sections.*]` from config the Channels and Apps sections start collapsed. `[sidebar] start_collapsed = true` starts every section collapsed. Opening a channel in a collapsed section shows that channel under the header without expanding the section. With `[sidebar] show_unread_in_collapsed = true` a collapsed section also lists its unread channels, and its header badge still counts them
+- Direct Messages are ordered by recent activity (unread first), as in Slack. The Direct Messages header's `⇅` / `A-Z` control switches between recent and alphabetical order for the session; `[sidebar] sort_dms_by_recency = false` starts alphabetical.
+- Collapsible sections — `Enter`/`Space` on a section header toggles it. A collapsed header shows aggregate unreads (`▸ Channels •3`). With Slack's sections every section starts expanded; with `[sections.*]` from config the Channels and Apps sections start collapsed, and `collapsed = true|false` on any section (built-ins included, e.g. `[sections."Channels"]`) overrides that. `[sidebar] start_collapsed = true` starts every section collapsed. Opening a channel in a collapsed section shows that channel under the header without expanding the section. With `[sidebar] show_unread_in_collapsed = true` a collapsed section also lists its unread channels, and its header badge still counts them
 - Live unread indicators: bold + blue dot for unread channels, muted text for read ones, aggregate dot+count on collapsed section headers
 - Glob-based config sections (`[sections.*]` in `config.toml`) — used when `use_slack_sections = false` or as a fallback when Slack's API is unreachable. Channel patterns can carry an optional `":<N>"` suffix (e.g. `"eng-general:1"`) to pin order within a section; see [Configuration › Ordering channels within a section](Configuration.md#ordering-channels-within-a-section).
 - Deactivated people are hidden like in the Slack desktop client: their DMs leave the sidebar and they are not offered in the new-message picker or `@` / `#` autocomplete, while old messages still show them as authors. The channel finder shows their DM only when you type their name, marked `deactivated`, so you can still read the history; its composer is disabled. Turn it off with `[general] hide_deactivated_users = false`; see [Configuration › Deactivated users](Configuration.md#deactivated-users).
@@ -127,16 +147,18 @@ See [[Terminal Compatibility|Terminal-Compatibility]] for which protocol your te
 ## Marks & Navigation
 
 - **Vim-style marks** — `m` + a letter records the selected message; `'` + that letter jumps back to it. A mark captures the channel, the message, and, when set inside a thread, the thread and the reply, so a mark can return you to one message in a 200-reply thread. In the Threads view, a mark records the selected thread.
+- **Conversation marks** — with the sidebar focused, `m` + a letter marks the highlighted channel or DM instead of a message; `'` + that letter opens it at its latest message, like opening it from the sidebar. Handy for hopping between a few frequent conversations (`'a` → a teammate's DM, `'b` → `#team`).
 - Session vs. persistent, as in vim: lowercase marks (`ma`–`mz`) die with the session, uppercase (`mA`–`mZ`) survive a restart. `persist_all` makes lowercase persist too, non-destructively.
 - `''` back-jump — returns you to where you were before the last jump, whether or not it changed channel; press again to toggle back.
-- `:marks` overlay — every mark with its channel and a preview of the message, rendered from a snapshot taken at mark time, so it works offline and immediately after a restart. Click a row (or press `Enter`) to jump to it, `Backspace` deletes a row, and `:delmarks abc` deletes by letter.
+- `:marks` overlay — every mark with its channel (`#channel` or `@person`) and a preview of the message (conversation marks have none), rendered from a snapshot taken at mark time, so it works offline and immediately after a restart. Click a row (or press `Enter`) to jump to it, `Backspace` deletes a row, and `:delmarks abc` deletes by letter.
 - **Position-aware back/forward** (`Ctrl+h` / `Ctrl+l`) — retraces visited channels and restores the message you were reading when you left each one, rather than dumping you at the newest message.
 
 ## Notifications
 
 - OS-level desktop notifications via [beeep](https://github.com/gen2brain/beeep)
 - Triggers on DMs, mentions, and configurable keywords
-- Suppressed when you're focused on the relevant channel
+- Optionally on replies in threads you're subscribed to (`on_thread_reply`)
+- Suppressed when you're focused on the relevant channel, unless `on_active_channel` is set
 - Suppressed entirely while you're in DND/snooze
 - Never for an author you hid with `:suppress` (per conversation or workspace-wide); their messages are not shown either
 
@@ -145,6 +167,8 @@ See [[Terminal Compatibility|Terminal-Compatibility]] for which protocol your te
 - Set self presence (Active / Away) and DND/snooze from `Ctrl+S`
 - Standard snooze durations (20m / 1h / 2h / 4h / 8h / 24h / until tomorrow morning) plus custom minutes
 - Workspace status presets (Working from home / On vacation) and Clear status, independent of presence — picking Active/Away never clears an existing status. Per-workspace, like presence and DND.
+- Set any status from `Ctrl+S` › "Set a status...": an emoji (Tab opens the emoji picker), up to 100 characters of text (paste with bracketed paste or `Ctrl+V`), and when it clears — Don't clear, 30 minutes, 1 hour, 4 hours, Today or This week. The expiry goes to Slack with the status, so it clears even while slk is closed.
+- `Ctrl+S` lists up to five of your recent statuses under the presets, the same list Slack's desktop and mobile apps show. Choosing one sets it again for as long as it lasted the first time. The list is fetched each time the menu opens (the last one shows meanwhile); when Slack can't be reached, no recent statuses are shown.
 - Live status segment in the status bar with snooze countdown
 - Reflects external state changes — set from the official Slack client or via your own API scripts — in real time over the WebSocket
 - Shows other people's state too: their custom status emoji (🎧 instead while they are in a huddle) follows their name on DM rows, message authors and channel-finder rows, `⊘` replaces the presence dot while they are in DND, and an open DM's header shows the full status text and when their DND ends

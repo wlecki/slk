@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"charm.land/bubbles/v2/textarea"
@@ -14,6 +15,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/gammons/slk/internal/bubbles/channelpicker"
+	"github.com/gammons/slk/internal/bubbles/commandpicker"
 	"github.com/gammons/slk/internal/core"
 	"github.com/gammons/slk/internal/emoji"
 	"github.com/gammons/slk/internal/ui/emojipicker"
@@ -49,7 +51,13 @@ func (d draft) isEmpty() bool {
 type Model struct {
 	input       textarea.Model
 	channelName string
-	width       int // display width, set by SetWidth
+
+	// draftInput draws drafts DraftView shows, a textarea of its own so
+	// drawing one never moves the input's cursor or scroll. draftViews
+	// caches those renders per conversation.
+	draftInput textarea.Model
+	draftViews map[draftKey]draftViewEntry
+	width      int // display width, set by SetWidth
 
 	// Mention picker state
 	mentionPicker   mentionpicker.Model
@@ -108,6 +116,13 @@ type Model struct {
 	emojiActive   bool
 	emojiStartCol int
 
+	// Slash-command picker. It opens only when "/" is typed at the
+	// start of an empty composer. commandStartCol is the byte offset
+	// of the first character after that "/", mirroring channelStartCol.
+	commandPicker   commandpicker.Model
+	commandActive   bool
+	commandStartCol int
+
 	// placeholderOverride, when non-empty, replaces the default
 	// "Message #channel..." placeholder. Used by edit mode to display
 	// "Editing message — Enter to save, Esc to cancel".
@@ -157,7 +172,11 @@ func (m *Model) dirty() { m.version++ }
 
 // defaultPlaceholder returns the default channel-aware placeholder text.
 func (m *Model) defaultPlaceholder() string {
-	return "Message #" + m.channelName + "... (i to insert)"
+	return placeholderFor(m.channelName)
+}
+
+func placeholderFor(channelName string) string {
+	return "Message #" + channelName + "... (i to insert)"
 }
 
 // effectivePlaceholder returns the override if set, else the default.
@@ -169,8 +188,27 @@ func (m *Model) effectivePlaceholder() string {
 }
 
 func New(channelName string) Model {
+	m := Model{
+		input:       newInput(placeholderFor(channelName)),
+		draftInput:  newInput(""),
+		channelName: channelName,
+		drafts:      make(map[draftKey]draft),
+		channelPicker: channelpicker.New(
+			channelpicker.WithStyles(channelPickerStyles())),
+		commandPicker: commandpicker.New(nil,
+			commandpicker.WithStyles(commandPickerStyles())),
+	}
+
+	// The draft textarea's height is set from the draft it draws, capped
+	// like autoGrow caps the input's.
+	m.draftInput.DynamicHeight = false
+	setTextareaColors(&m.draftInput, styles.SurfaceDark, styles.TextMuted)
+	return m
+}
+
+func newInput(placeholder string) textarea.Model {
 	ta := textarea.New()
-	ta.Placeholder = "Message #" + channelName + "... (i to insert)"
+	ta.Placeholder = placeholder
 	ta.CharLimit = 40000
 	// MaxHeight is the textarea's logical-line cap, which also gates
 	// InsertNewline via atContentLimit(). We want users to be able to
@@ -194,39 +232,18 @@ func New(channelName string) Model {
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.SetWidth(40)
-
-	// Override textarea styles to use our dark background consistently
-	bg := lipgloss.NewStyle().Background(styles.SurfaceDark).Foreground(styles.TextPrimary)
-	s := ta.Styles()
-	s.Focused.Base = bg
-	s.Focused.Text = bg
-	s.Focused.CursorLine = bg
-	s.Focused.EndOfBuffer = bg
-	s.Focused.Prompt = bg
-	s.Blurred.Base = bg
-	s.Blurred.Text = bg
-	s.Blurred.CursorLine = bg
-	s.Blurred.EndOfBuffer = bg
-	s.Blurred.Prompt = bg
-	s.Focused.Placeholder = bg.Foreground(styles.TextMuted)
-	s.Blurred.Placeholder = bg.Foreground(styles.TextMuted)
-	s.Cursor.Color = styles.TextPrimary
-	ta.SetStyles(s)
-
-	return Model{
-		input:       ta,
-		channelName: channelName,
-		drafts:      make(map[draftKey]draft),
-		channelPicker: channelpicker.New(
-			channelpicker.WithStyles(channelPickerStyles())),
-	}
+	setTextareaColors(&ta, styles.SurfaceDark, styles.TextPrimary)
+	return ta
 }
 
 // RefreshStyles re-applies textarea styles from current theme colors.
 // Call after theme changes.
 func (m *Model) RefreshStyles() {
 	m.setInputBackground(styles.SurfaceDark)
+	setTextareaColors(&m.draftInput, styles.SurfaceDark, styles.TextMuted)
+	m.draftViews = nil
 	m.channelPicker.SetStyles(channelPickerStyles())
+	m.commandPicker.SetStyles(commandPickerStyles())
 	m.dirty()
 }
 
@@ -234,8 +251,12 @@ func (m *Model) RefreshStyles() {
 // placeholder, on bg. View uses it so insert mode can fill the text
 // area without storing that color on the model.
 func (m *Model) setInputBackground(bg color.Color) {
-	base := lipgloss.NewStyle().Background(bg).Foreground(styles.TextPrimary)
-	s := m.input.Styles()
+	setTextareaColors(&m.input, bg, styles.TextPrimary)
+}
+
+func setTextareaColors(ta *textarea.Model, bg, fg color.Color) {
+	base := lipgloss.NewStyle().Background(bg).Foreground(fg)
+	s := ta.Styles()
 	s.Focused.Base = base
 	s.Focused.Text = base
 	s.Focused.CursorLine = base
@@ -248,8 +269,8 @@ func (m *Model) setInputBackground(bg color.Color) {
 	s.Blurred.Prompt = base
 	s.Focused.Placeholder = base.Foreground(styles.TextMuted)
 	s.Blurred.Placeholder = base.Foreground(styles.TextMuted)
-	s.Cursor.Color = styles.TextPrimary
-	m.input.SetStyles(s)
+	s.Cursor.Color = fg
+	ta.SetStyles(s)
 }
 
 func (m *Model) SetChannel(name string) {
@@ -292,6 +313,12 @@ func (m *Model) Value() string {
 
 func (m *Model) SetValue(s string) {
 	m.input.SetValue(s)
+	// A replacement (Ctrl+V, the external editor) bypasses the key
+	// path, so an open slash picker would otherwise keep the query
+	// from before the paste and complete over the new text.
+	if m.commandActive {
+		m.syncCommandQuery()
+	}
 	m.dirty()
 }
 
@@ -434,13 +461,16 @@ func (m *Model) Reset() {
 // for one keystroke until the next keystroke pushes the count past
 // the boundary.
 func (m Model) visualLineCount() int {
-	val := m.input.Value()
+	if m.input.Value() != "" && m.input.Width() <= 0 {
+		return m.input.LineCount()
+	}
+	return visualLines(m.input.Value(), m.input.Width())
+}
+
+// visualLines is visualLineCount for any text wrapped at w (> 0).
+func visualLines(val string, w int) int {
 	if val == "" {
 		return 1
-	}
-	w := m.input.Width()
-	if w <= 0 {
-		return m.input.LineCount()
 	}
 	lines := strings.Split(val, "\n")
 	total := 0
@@ -480,15 +510,84 @@ func (m Model) visualLineCount() int {
 // padding. Without the 2-col margin, the right edge of the textarea
 // shows the outer panel's background through.
 func (m *Model) SetWidth(width int) {
-	innerWidth := width - 5 // textarea wrap, intentionally 2 cols narrower than the visible content area
-	if innerWidth < 10 {
-		innerWidth = 10
-	}
 	if m.width != width {
 		m.width = width
-		m.input.SetWidth(innerWidth)
+		m.input.SetWidth(textareaWidth(width))
 		m.dirty()
 	}
+}
+
+// textareaWidth is the wrap width of the textarea in a composer of
+// the given width (see SetWidth).
+func textareaWidth(width int) int {
+	return max(width-5, 10)
+}
+
+// draftViewEntry is a DraftView render and what it was drawn from.
+type draftViewEntry struct {
+	text        string
+	chips       string
+	placeholder string
+	width       int
+	view        string
+}
+
+// DraftView draws the draft of the conversation (teamID, channelID,
+// threadTS), the visible one or a stored one, as a composer nobody is
+// typing in: laid out like View(width, false), in muted colours.
+// channelName names the conversation in the placeholder an empty draft
+// shows. A split window that is not focused draws it, so its layout
+// does not move when it takes focus.
+func (m *Model) DraftView(teamID, channelID, threadTS, channelName string, width int) string {
+	key := draftKey{teamID: teamID, channelID: channelID, threadTS: threadTS}
+	if channelID == "" {
+		key = draftKey{}
+	}
+
+	d := m.drafts[key]
+	if key == m.activeKey {
+		d = draft{text: m.input.Value(), attachments: m.pending}
+	}
+
+	entry := draftViewEntry{
+		text:        d.text,
+		chips:       chipKey(d.attachments),
+		placeholder: placeholderFor(channelName),
+		width:       width,
+	}
+	if cached := m.draftViews[key]; cached.view != "" && cached.withoutView() == entry {
+		return cached.view
+	}
+
+	innerWidth := composeInnerWidth(width)
+	body := lipgloss.NewStyle().
+		Foreground(styles.TextMuted).
+		Background(styles.SurfaceDark).
+		Width(innerWidth).
+		Render(entry.placeholder)
+	if d.text != "" {
+		wrap := textareaWidth(width)
+		m.draftInput.SetWidth(wrap)
+		m.draftInput.SetValue(d.text)
+		m.draftInput.SetHeight(min(visualLines(d.text, wrap), composeMaxVisibleRows))
+		body = lipgloss.NewStyle().
+			Background(styles.SurfaceDark).
+			Foreground(styles.TextMuted).
+			Width(innerWidth).
+			Render(m.draftInput.View())
+	}
+
+	entry.view = composeFrame(styles.ComposeBox, width, body, renderChips(d.attachments, true, width))
+	if m.draftViews == nil {
+		m.draftViews = make(map[draftKey]draftViewEntry)
+	}
+	m.draftViews[key] = entry
+	return entry.view
+}
+
+func (e draftViewEntry) withoutView() draftViewEntry {
+	e.view = ""
+	return e
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
@@ -502,7 +601,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	// pending attachment instead of forwarding to the textarea.
 	// Skipped while uploading or while a picker is active (those
 	// have their own Backspace semantics).
-	if isKey && !m.uploading && !m.emojiActive && !m.mentionActive && !m.channelActive &&
+	if isKey && !m.uploading && !m.PickerActive() &&
 		len(m.pending) > 0 &&
 		keyMsg.Key().Code == tea.KeyBackspace &&
 		m.input.Value() == "" &&
@@ -532,6 +631,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	// matters for the empty-trigger edge case.
 	if m.channelActive && isKey {
 		m2, cmd := m.handleChannelKey(keyMsg)
+		m2.dirty()
+		return m2, cmd
+	}
+	// Slash commands are last: "/" at column 0 never coincides with
+	// @, #, or :, and a command token owns the keys until it closes.
+	if m.commandActive && isKey {
+		m2, cmd := m.handleCommandKey(keyMsg)
 		m2.dirty()
 		return m2, cmd
 	}
@@ -582,6 +688,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	// popup opens. We re-check on every keystroke (cheap) so the popup
 	// appears the moment the threshold is hit.
 	m.maybeOpenEmojiPicker()
+	if isKey {
+		m.maybeOpenCommandPicker(keyMsg.Key().Text)
+	} else if m.commandActive {
+		// A paste or other non-key replacement landed in the textarea
+		// while the slash picker was open. Re-read the token.
+		m.syncCommandQuery()
+	}
 
 	m.autoGrow()
 	// Conservative: bump version on every Update. The textarea's internal
@@ -920,6 +1033,192 @@ func channelPickerStyles() channelpicker.Styles {
 	}
 }
 
+// SetCommandSource is the list the slash picker pulls when "/" is typed.
+// Both composers share the App's source. Nil leaves the picker closed.
+func (m *Model) SetCommandSource(src commandpicker.SourceFunc) {
+	m.commandPicker.SetSource(src)
+}
+
+// IsCommandActive reports whether the slash-command picker is showing.
+func (m Model) IsCommandActive() bool { return m.commandActive }
+
+// CloseCommand dismisses the slash picker without completing.
+func (m *Model) CloseCommand() {
+	m.commandActive = false
+	m.commandPicker.Close()
+}
+
+// CommandPickerView returns the rendered slash picker, or "" when it
+// is not active.
+func (m Model) CommandPickerView(width int) string {
+	if !m.commandActive {
+		return ""
+	}
+	m.commandPicker.SetWidth(width)
+	return m.commandPicker.View()
+}
+
+// PickerActive reports whether any composer popup is open: emoji,
+// mention, channel, or slash command.
+func (m Model) PickerActive() bool {
+	return m.emojiActive || m.mentionActive || m.channelActive || m.commandActive
+}
+
+// DismissPicker closes the open popup and reports whether there was one.
+// Emoji wins when more than one is somehow active, matching PopupView.
+func (m *Model) DismissPicker() bool {
+	switch {
+	case m.emojiActive:
+		m.CloseEmoji()
+	case m.mentionActive:
+		m.CloseMention()
+	case m.channelActive:
+		m.CloseChannel()
+	case m.commandActive:
+		m.CloseCommand()
+	default:
+		return false
+	}
+	m.dirty()
+	return true
+}
+
+// PopupView returns the open popup, or "" when none is. Emoji, mention,
+// channel, then slash command — the same order the key handler gives them.
+func (m Model) PopupView(width int) string {
+	if v := m.EmojiPickerView(width); v != "" {
+		return v
+	}
+	if v := m.MentionPickerView(width); v != "" {
+		return v
+	}
+	if v := m.ChannelPickerView(width); v != "" {
+		return v
+	}
+	return m.CommandPickerView(width)
+}
+
+// commandPickerStyles maps the current theme onto the slash picker.
+func commandPickerStyles() commandpicker.Styles {
+	return commandpicker.Styles{
+		Chrome: messages.ChromeStyles(),
+		Name:   lipgloss.NewStyle().Foreground(styles.TextPrimary),
+		Detail: lipgloss.NewStyle().Foreground(styles.TextMuted),
+	}
+}
+
+// handleCommandKey processes keys while the slash picker is open.
+// Tab or Enter completes; Esc closes; a space (or any whitespace) is
+// typed and closes, so the command is not run.
+func (m Model) handleCommandKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if res := m.commandPicker.HandleKey(msg); res.Handled {
+		if res.Completed {
+			m.insertCommand(res.Name)
+		}
+		if !m.commandPicker.IsVisible() {
+			m.commandActive = false
+		}
+		m.autoGrow()
+		return m, nil
+	}
+	k := msg.Key()
+	switch {
+	case k.Code == tea.KeyBackspace:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.syncCommandQuery()
+		m.autoGrow()
+		return m, cmd
+	case len(k.Text) > 0:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.syncCommandQuery()
+		m.autoGrow()
+		return m, cmd
+	default:
+		m.commandActive = false
+		m.commandPicker.Close()
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.autoGrow()
+		return m, cmd
+	}
+}
+
+// maybeOpenCommandPicker opens the slash picker when typed is the whole
+// composer and it is a command token: "/" at column 0 of what was an
+// empty box, with no whitespace yet. A paste of "/giphy" counts. Anything
+// already in the box, or a source with nothing to show, stays closed.
+func (m *Model) maybeOpenCommandPicker(typed string) {
+	if m.commandActive || typed == "" || m.PickerActive() {
+		return
+	}
+	val := m.input.Value()
+	if val != typed || val == "" || val[0] != '/' {
+		return
+	}
+	if m.cursorPosition() != len(val) {
+		return
+	}
+	if strings.IndexFunc(val, unicode.IsSpace) >= 0 {
+		return
+	}
+	if !m.commandPicker.Open() {
+		return
+	}
+	m.commandActive = true
+	m.commandStartCol = 1
+	if len(val) > 1 {
+		m.commandPicker.SetQuery(val[1:])
+	}
+}
+
+func (m *Model) syncCommandQuery() {
+	val := m.input.Value()
+	pos := m.cursorPosition()
+	if pos > len(val) {
+		pos = len(val)
+	}
+	// The token is only the leading "/name" the cursor is still inside.
+	// Whitespace before the cursor means the name is finished (a paste
+	// of the arguments, or a typed space), so the picker must close
+	// rather than complete over that text.
+	if pos < 1 || val == "" || val[0] != '/' || strings.IndexFunc(val[:pos], unicode.IsSpace) >= 0 {
+		m.commandActive = false
+		m.commandPicker.Close()
+		return
+	}
+	m.commandStartCol = 1
+	m.commandPicker.SetQuery(val[1:pos])
+}
+
+// insertCommand replaces the in-progress "/query" with "/name ".
+func (m *Model) insertCommand(name string) {
+	if !strings.HasPrefix(name, "/") {
+		name = "/" + name
+	}
+	val := m.input.Value()
+	pos := m.cursorPosition()
+	if pos > len(val) {
+		pos = len(val)
+	}
+	start := m.commandStartCol - 1
+	if start < 0 {
+		start = 0
+	}
+	if start > len(val) {
+		start = len(val)
+	}
+	if pos < start {
+		pos = start
+	}
+	before := val[:start]
+	after := val[pos:]
+	inserted := name + " "
+	m.input.SetValue(before + inserted + after)
+	m.setInputCursor(len(before) + len(inserted))
+}
+
 // SetUsers provides the list of workspace users for mention autocomplete.
 // The stored list is the canonical workspace roster; the derived
 // []mentionpicker.User pushed to the embedded picker is recomputed by
@@ -1090,6 +1389,84 @@ func (m *Model) OfferDraft(teamID, channelID, threadTS, text string) bool {
 	return true
 }
 
+// Slot is one conversation's composer text, as draft sync reads it.
+type Slot struct {
+	TeamID, ChannelID, ThreadTS string
+	Text                        string
+	// Visible is the slot on screen (the composer is bound to it).
+	Visible bool
+}
+
+// Slots lists every conversation this composer holds: the bound one,
+// even empty, then each stored one. A detached composer has no bound slot.
+func (m *Model) Slots() []Slot {
+	out := make([]Slot, 0, len(m.drafts)+1)
+	if k := m.activeKey; k.channelID != "" {
+		out = append(out, Slot{k.teamID, k.channelID, k.threadTS, m.input.Value(), true})
+	}
+	for k, d := range m.drafts {
+		out = append(out, Slot{k.teamID, k.channelID, k.threadTS, d.text, false})
+	}
+	return out
+}
+
+// SlotText returns the text held for a conversation and whether it is
+// the visible one. A conversation with nothing stored reads "".
+func (m *Model) SlotText(teamID, channelID, threadTS string) (string, bool) {
+	key := draftKey{teamID: teamID, channelID: channelID, threadTS: threadTS}
+	if channelID != "" && key == m.activeKey {
+		return m.input.Value(), true
+	}
+	return m.drafts[key].text, false
+}
+
+// ApplyRemoteDraft writes text, the conversation's draft from Slack, into
+// its slot. A stored slot is overwritten (text "" clears its text and
+// keeps its attachments); the visible composer is written only when it
+// is empty, so text on screen is never replaced. The caller decides
+// whether the slot may change at all (draft sync compares it with what
+// Slack last had). Reports whether it wrote.
+func (m *Model) ApplyRemoteDraft(teamID, channelID, threadTS, text string) bool {
+	if channelID == "" {
+		return false
+	}
+	key := draftKey{teamID: teamID, channelID: channelID, threadTS: threadTS}
+	if key == m.activeKey {
+		if text == "" || m.input.Value() != "" {
+			return false
+		}
+		m.input.SetValue(text)
+		m.autoGrow()
+		m.dirty()
+		return true
+	}
+	d := m.drafts[key]
+	d.text = text
+	if d.isEmpty() {
+		delete(m.drafts, key)
+	} else {
+		m.drafts[key] = d
+	}
+	return true
+}
+
+// ClearSlot empties a conversation's text, visible or not, keeping its
+// attachments. For a draft the user deleted from the Drafts list.
+func (m *Model) ClearSlot(teamID, channelID, threadTS string) {
+	if channelID == "" {
+		return
+	}
+	key := draftKey{teamID: teamID, channelID: channelID, threadTS: threadTS}
+	if key == m.activeKey {
+		m.closePickers()
+		m.input.Reset()
+		m.input.SetHeight(1)
+		m.dirty()
+		return
+	}
+	m.ApplyRemoteDraft(teamID, channelID, threadTS, "")
+}
+
 // closePickers ends every completion session (mention, channel, emoji)
 // so no stale start-offset survives a text replacement. A leftover
 // offset indexing a shorter value is the slice-bounds panic source.
@@ -1100,6 +1477,8 @@ func (m *Model) closePickers() {
 	m.channelPicker.Close()
 	m.emojiActive = false
 	m.emojiPicker.Close()
+	m.commandActive = false
+	m.commandPicker.Close()
 }
 
 // SetChannelMembership records the member set for a channel and, if
@@ -1472,6 +1851,46 @@ func (m *Model) SetEmojiCustoms(customs map[string]string) {
 // IsEmojiActive returns whether the emoji picker is currently showing.
 func (m Model) IsEmojiActive() bool { return m.emojiActive }
 
+// EmojiPopupRows returns how many result rows the open emoji popup
+// draws. 0 when it is closed.
+func (m Model) EmojiPopupRows() int {
+	if !m.emojiActive {
+		return 0
+	}
+	return len(m.emojiPicker.Filtered())
+}
+
+// ClickEmojiRow inserts the emoji on the popup's content row (0 is the
+// first result below the popup border) and closes the picker.
+func (m *Model) ClickEmojiRow(row int) bool {
+	if !m.emojiActive || !m.emojiPicker.SelectRow(row) {
+		return false
+	}
+	entry, ok := m.emojiPicker.SelectedEntry()
+	if !ok {
+		return false
+	}
+	m.insertEmoji(entry.Name)
+	m.emojiActive = false
+	m.emojiPicker.Close()
+	m.autoGrow()
+	return true
+}
+
+// ScrollEmojiPopup moves the emoji highlight one row, for a wheel notch
+// over the popup.
+func (m *Model) ScrollEmojiPopup(up bool) bool {
+	if !m.emojiActive {
+		return false
+	}
+	if up {
+		m.emojiPicker.MoveUp()
+	} else {
+		m.emojiPicker.MoveDown()
+	}
+	return true
+}
+
 // CloseEmoji dismisses the emoji picker without selecting.
 func (m *Model) CloseEmoji() {
 	m.emojiActive = false
@@ -1665,12 +2084,16 @@ func formatChipSize(size int64) string {
 // While uploading, chips render in muted color so the user can see
 // they're in flight.
 func (m Model) renderChips(width int) string {
-	if len(m.pending) == 0 {
+	return renderChips(m.pending, m.uploading, width)
+}
+
+func renderChips(pending []core.PendingAttachment, muted bool, width int) string {
+	if len(pending) == 0 {
 		return ""
 	}
 	bg := styles.SurfaceDark
 	fg := styles.TextPrimary
-	if m.uploading {
+	if muted {
 		fg = styles.TextMuted
 	}
 
@@ -1682,7 +2105,7 @@ func (m Model) renderChips(width int) string {
 
 	const maxNameLen = 32
 	var rendered []string
-	for _, p := range m.pending {
+	for _, p := range pending {
 		name := p.Filename
 		runes := []rune(name)
 		if len(runes) > maxNameLen {
@@ -1694,6 +2117,16 @@ func (m Model) renderChips(width int) string {
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
 	return lipgloss.NewStyle().MaxWidth(width).Render(row)
+}
+
+// chipKey identifies what renderChips draws for pending, so a cached
+// render is dropped when an attachment is swapped for another.
+func chipKey(pending []core.PendingAttachment) string {
+	var b strings.Builder
+	for _, p := range pending {
+		fmt.Fprintf(&b, "%d:%s\x00", p.Size, p.Filename)
+	}
+	return b.String()
 }
 
 // renderBroadcastHint returns the "also send to channel" indicator
@@ -1711,16 +2144,25 @@ func (m Model) renderBroadcastHint(width int, innerBG color.Color) string {
 		Render(fmt.Sprintf("↪ also send to #%s  (ctrl+o to cancel)", m.channelName))
 }
 
-func (m Model) View(width int, focused bool) string {
-	chips := m.renderChips(width)
+// composeInnerWidth is the content width of a composer of the given
+// width: ComposeBox has BorderLeft(1) + Padding(1,1,1,1), 3 columns.
+func composeInnerWidth(width int) int {
+	return max(width-3, 1)
+}
 
-	// ComposeBox has BorderLeft(1) + Padding(1,1,1,1) = 3 chars overhead.
-	// lipgloss Width includes padding but excludes border.
-	// Total rendered = Width + border = (width-1) + 1 = width.
-	innerWidth := width - 3 // content area: width - border(1) - padding(2)
-	if innerWidth < 1 {
-		innerWidth = 1
+// composeFrame draws a composer's body in its box, under its chips.
+// lipgloss Width includes padding but excludes the border, so the box
+// is (width-1) + 1 = width wide.
+func composeFrame(style lipgloss.Style, width int, body, chips string) string {
+	box := style.Width(width - 1).Render(body)
+	if chips == "" {
+		return box
 	}
+	return lipgloss.JoinVertical(lipgloss.Left, chips, box)
+}
+
+func (m Model) View(width int, focused bool) string {
+	innerWidth := composeInnerWidth(width)
 
 	// Insert mode paints the box with InsertFill: the selected-message
 	// gray, or colors.compose_insert_bg when a theme sets it.
@@ -1733,7 +2175,6 @@ func (m Model) View(width int, focused bool) string {
 			BorderBackground(innerBG).
 			Background(innerBG)
 	}
-	style = style.Width(width - 1)
 	// The copy's textarea, so a focused render fills the glyphs too.
 	// The caller's model keeps the SurfaceDark styles.
 	m.setInputBackground(innerBG)
@@ -1760,14 +2201,8 @@ func (m Model) View(width int, focused bool) string {
 			Render(m.input.View())
 	}
 
-	hint := m.renderBroadcastHint(innerWidth, innerBG)
-	if hint != "" {
+	if hint := m.renderBroadcastHint(innerWidth, innerBG); hint != "" {
 		content = content + "\n" + hint
 	}
-	box := style.Render(content)
-
-	if chips == "" {
-		return box
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, chips, box)
+	return composeFrame(style, width, content, m.renderChips(width))
 }

@@ -159,13 +159,14 @@ func (a *App) appHomeAvailable() bool {
 	return a.appHome.Home() != nil && a.appHomeChannelID == a.activeChannelID
 }
 
-// appHomeRenderContext is the Block Kit host context the Home tab
-// renders with: the messages pane's mention names and emoji, and no
-// image pipeline. Nothing paints image placements in this pane, and no
-// fetch completion repaints it, so an empty renderer context makes
-// image blocks draw their fallback links instead of reserving rows
-// nothing will fill.
-func (a *App) appHomeRenderContext() blockkit.Context {
+// appBlocksRenderContext is the Block Kit host context the app-owned
+// surfaces render with: an app DM's Home tab, and a modal. It carries
+// the messages pane's mention names and emoji, and no image pipeline.
+// Nothing paints image placements on those surfaces, and no fetch
+// completion repaints them, so an empty renderer context makes image
+// blocks draw their fallback links instead of reserving rows nothing
+// will fill.
+func (a *App) appBlocksRenderContext() blockkit.Context {
 	rc := a.messagepane.DraftRenderContext()
 	rc.Images = imgrender.NewRenderer()
 	var flushes []func(io.Writer) error
@@ -182,8 +183,30 @@ func (a *App) toggleAppHome() tea.Cmd {
 		a.view = ViewChannels
 		return nil
 	}
+	a.sidebar.ClearActiveView()
 	a.view = ViewAppHome
 	return nil
+}
+
+// clickAppHomeAction is a mouse click on the Home tab's button idx: a
+// plain button presses, a URL button opens the link, and a button with
+// Slack's confirmation step asks first (its dismiss just closes).
+func (a *App) clickAppHomeAction(idx int) tea.Cmd {
+	home := a.appHome.Home()
+	if home == nil || idx < 0 || idx >= len(home.Actions) {
+		return nil
+	}
+	act := home.Actions[idx]
+	switch {
+	case act.URL != "":
+		url := act.URL
+		return func() tea.Msg { return OpenLinkMsg{URL: url} }
+	case act.Confirm != nil:
+		a.openConfirmChoice(*a.appHomeConfirmChoice(act, nil))
+		return nil
+	default:
+		return a.pressAppHomeAction(act)
+	}
 }
 
 // openAppHomeActions raises the chooser for the Home tab's buttons, one
@@ -261,7 +284,7 @@ func (a *App) appHomeMessageOp(msg tea.KeyMsg) bool {
 		k.SaveThread, k.CopyMessage, k.CopyPermalink, k.ForwardMessage,
 		k.Edit, k.Delete, k.RemovePreview, k.OpenPreview, k.OpenLink,
 		k.DownloadFile, k.MarkUnread, k.MarkSet, k.JumpToParent,
-		k.SearchMode, k.SearchNext, k.SearchPrev,
+		k.SearchMode, k.SearchNext, k.SearchPrev, k.OpenInEditor,
 	} {
 		if key.Matches(msg, b) {
 			return true

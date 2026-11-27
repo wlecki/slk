@@ -9,6 +9,7 @@ import (
 	"context"
 	"image"
 	"io/fs"
+	"time"
 
 	"github.com/gammons/slk/internal/core/blocks"
 	"github.com/gammons/slk/internal/ids"
@@ -56,10 +57,11 @@ type InteractionService interface {
 		attachmentID int, callbackID, serviceID string, action blocks.LegacyAction, ephemeral bool) error
 }
 
-// CommandService runs Slack slash commands. Run is blocking (callers run
-// it from a tea.Cmd). What a command produces arrives over the WebSocket,
-// so only the error comes back: *CommandError when Slack refuses the
-// command, any other error for a transport failure.
+// CommandService runs Slack slash commands and exposes the workspace's
+// command list for completion. Run is blocking (callers run it from a
+// tea.Cmd). What a command produces arrives over the WebSocket, so only
+// the error comes back: *CommandError when Slack refuses the command,
+// any other error for a transport failure. List does not block.
 //
 // Build one with NewCommandService.
 type CommandService interface {
@@ -69,6 +71,35 @@ type CommandService interface {
 	// threadTS's thread when threadTS is set.
 	// args is wire-form text (<@U…>, <#C…|name>); "" for none.
 	Run(teamID string, channelID ids.ChannelID, threadTS ids.ThreadTS, command, args string) error
+
+	// List returns the active workspace's slash commands, the slice
+	// published at connect. It does not block and it does not copy:
+	// callers must not mutate the result. Nil before the fetch lands
+	// or when the fetch failed.
+	List() []SlashCommand
+}
+
+// DraftService syncs composer drafts with Slack's own (drafts.*). Every
+// method is blocking; callers run it from a tea.Cmd. teamID / key.TeamID
+// names the workspace, which need not be the active one.
+//
+// Build one with NewDraftService.
+type DraftService interface {
+	// Load lists the workspace's active drafts.
+	Load(teamID string) ([]Draft, error)
+	// Save makes text (wire form) the conversation's draft. edited is
+	// when the text was last changed. ErrDraftHandsOff when the
+	// conversation's draft is one slk won't overwrite. current, checked
+	// under the engine's per-conversation lock before any API call, is
+	// an escape hatch for a save built before a later send or delete
+	// for the same conversation: when current reports false the call
+	// makes no API call and answers ErrDraftStale. nil means always
+	// current (the quit flush passes nil).
+	Save(key DraftKey, text string, edited time.Time, current func() bool) (DraftSaveResult, error)
+	// Discard deletes the conversation's draft, if slk knows of one.
+	Discard(key DraftKey) error
+	// Delete deletes one draft by id (the Drafts list).
+	Delete(teamID, draftID string) error
 }
 
 // ThreadService is the App's interface to Slack's thread surfaces:
@@ -395,6 +426,14 @@ type PresenceService interface {
 	// SetStatus applies a presence-menu choice; snoozeMinutes is set
 	// for PresenceSnooze.
 	SetStatus(action PresenceAction, snoozeMinutes int)
+
+	// SetCustomStatus sets the user's own status text and emoji on the
+	// active workspace; expiration is Unix seconds, 0 for no expiry.
+	SetCustomStatus(text, emoji string, expiration int64)
+
+	// RecentStatuses fetches the user's recent statuses in workspace
+	// teamID, newest first. Blocking; call it from a tea.Cmd.
+	RecentStatuses(teamID string) ([]RecentStatus, error)
 
 	// SendTyping broadcasts a typing indicator for channelID. Called off
 	// the Update goroutine.

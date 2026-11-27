@@ -22,8 +22,11 @@ const (
 	ModeWorkspaceSearch
 	ModeUserProfile
 	ModeMarks
+	ModeDrafts
 	ModeSuppressed
 	ModeOpenSlackLink
+	ModeAppView
+	ModeStatusDialog
 	modeCount // must stay last: the number of modes
 )
 
@@ -51,8 +54,11 @@ func (m Mode) IsModalOverlay() bool {
 		ModeWorkspaceSearch,
 		ModeUserProfile,
 		ModeMarks,
+		ModeDrafts,
 		ModeSuppressed,
-		ModeOpenSlackLink:
+		ModeOpenSlackLink,
+		ModeAppView,
+		ModeStatusDialog:
 		return true
 	default:
 		return false
@@ -97,10 +103,16 @@ func (m Mode) String() string {
 		return "PROFILE"
 	case ModeMarks:
 		return "MARKS"
+	case ModeDrafts:
+		return "DRAFTS"
 	case ModeSuppressed:
 		return "HIDDEN"
 	case ModeOpenSlackLink:
 		return "OPEN LINK"
+	case ModeAppView:
+		return "APP VIEW"
+	case ModeStatusDialog:
+		return "SET STATUS"
 	default:
 		return "UNKNOWN"
 	}

@@ -57,6 +57,17 @@ var (
 )
 
 func main() {
+	// `slk --open` talks to the running TUI and exits. It runs before the
+	// debug log is set up: debuglog.Init truncates slk-debug.log in the
+	// cwd, which would erase the running session's log on every link.
+	if len(os.Args) > 1 && os.Args[1] == "--open" {
+		if err := openViaControlSocket(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Debug log: when SLK_DEBUG is set, debuglog.Init opens
 	// slk-debug.log in cwd (truncating any prior session) and routes
 	// both the package-internal logger and the global stdlib log to
@@ -191,6 +202,7 @@ Usage:
                           Add one from a browser session (no desktop app)
   slk --remove-workspace  Remove a configured workspace (interactive)
   slk --list-workspaces   List configured workspaces (TeamID, Slug, Name)
+  slk --open <permalink>  Open a Slack message link in the running slk
   slk --dump-sections     Dump raw users.channelSections.list JSON (diagnostic)
   slk export [flags]      Export a channel's messages and threads to Markdown
                           (see 'slk export --help')
@@ -395,6 +407,12 @@ func run() error {
 	}
 	imageFetcher := imgpkg.NewFetcher(imageCache, newImageHTTPClient())
 	imageFetcher.SetAuths(auths)
+	// Which message images load without asking. The fetcher refuses
+	// what the policy does not allow; the panes read the same policy
+	// to draw a "not loaded" line instead of fetching.
+	imageMode, _ := imgpkg.ParseLoadMode(cfg.General.ImageLoading)
+	imagePolicy := imgpkg.NewLoadPolicy(imageMode, cfg.General.TrustedImageHosts)
+	imageFetcher.SetLoadPolicy(imagePolicy)
 
 	// File attachment downloads (`d` keybinding) share the image
 	// fetcher's auth mechanism via slackhttp.AuthResolver. The
@@ -502,6 +520,30 @@ func run() error {
 		}
 	}
 	debuglog.ImgRender("image protocol: %s", proto)
+
+	// Ask the terminal itself whether it measures text by grapheme
+	// cluster (DECRQM 2027). The emoji glyph rule needs the terminal's
+	// own answer: on a wcwidth terminal a VS16 emoji draws narrower than
+	// lipgloss measures, which is what the one-codepoint rule protects.
+	// bubbletea's mode report cannot be trusted for this — slk
+	// synthesizes one (declareGraphemeWidths, internal/ui) to force the
+	// renderer onto every terminal, and the reducer cannot tell it from
+	// a real one. Same multiplexer guard as the sixel probe: under tmux
+	// or zellij the answer would not be the terminal's.
+	if os.Getenv("TMUX") == "" && os.Getenv("ZELLIJ") == "" &&
+		term.IsTerminal(int(os.Stdin.Fd())) {
+		state, err := term.MakeRaw(int(os.Stdin.Fd()))
+		if err != nil {
+			debuglog.ImgRender("2027 probe skipped: cannot enter raw mode: %v", err)
+		} else {
+			value, ok := imgpkg.ProbeDECRQM(os.Stdout, os.Stdin, 2027, 200*time.Millisecond)
+			if rerr := term.Restore(int(os.Stdin.Fd()), state); rerr != nil {
+				debuglog.ImgRender("term restore after 2027 probe: %v", rerr)
+			}
+			emojiwidth.SetGraphemeClusters(ok && (value == 1 || value == 3))
+			debuglog.ImgRender("unicode core (2027) probe: ok=%v value=%d", ok, value)
+		}
+	}
 	// Record the placement mode before anything can upload (the avatar
 	// cache below, the first View). A probe that downgraded kitty takes
 	// emulation with it.
@@ -528,6 +570,10 @@ func run() error {
 	// failed) but the real detect path succeeded.
 	reconciledImageMode := proto == imgpkg.ProtoKitty && cfg.Appearance.EmojiImages == "on"
 	emojiwidth.SetImageMode(reconciledImageMode, cfg.Appearance.EmojiCells)
+	// Inline emoji on a sixel terminal ride the placement pipeline
+	// instead of the kitty placeholder path; both obey emoji_images.
+	emojiwidth.SetSixelInlineMode(proto == imgpkg.ProtoSixel && cfg.Appearance.EmojiImages == "on",
+		cfg.Appearance.EmojiCells)
 	debuglog.ImgRender("emoji image mode: reconciled=%v (final proto=%s, emoji_images=%q)",
 		reconciledImageMode, proto, cfg.Appearance.EmojiImages)
 
@@ -562,6 +608,7 @@ func run() error {
 			CellPixels:  image.Pt(pxW, pxH),
 			MaxRows:     cfg.Appearance.MaxImageRows,
 			MaxCols:     cfg.Appearance.MaxImageCols,
+			Policy:      imagePolicy,
 			SendMsg:     send,
 		}
 	}
@@ -743,14 +790,6 @@ func run() error {
 	})
 	app.SetSuppressionService(core.NewSuppressionService(suppressor.Rules, suppressor.Add, suppressor.Remove))
 
-	// endOfDayUnix returns 23:59:59 local time on now's date, as a Unix
-	// timestamp, so a WFH status auto-clears at the end of the day
-	// instead of lingering indefinitely.
-	endOfDayUnix := func(now time.Time) int64 {
-		y, m, d := now.Date()
-		return time.Date(y, m, d, 23, 59, 59, 0, now.Location()).Unix()
-	}
-
 	// Wire presence/DND status setter. Resolves the active team ID
 	// through the router at invocation so the closure always targets
 	// the currently-active workspace context.
@@ -771,7 +810,7 @@ func run() error {
 			case presencemenu.ActionSnooze:
 				_, err = wctx.Client.SetSnooze(ctx, snoozeMinutes)
 			case presencemenu.ActionSetWFH:
-				err = wctx.Client.SetCustomStatus(ctx, "Working from home", ":house:", endOfDayUnix(time.Now()))
+				err = wctx.Client.SetCustomStatus(ctx, "Working from home", ":house:", presencemenu.EndOfDay(time.Now()))
 			case presencemenu.ActionSetVacation:
 				err = wctx.Client.SetCustomStatus(ctx, "On vacation", ":palm_tree:", 0)
 			case presencemenu.ActionClearStatus:
@@ -796,6 +835,32 @@ func run() error {
 				p.Send(ui.ToastMsg{Text: "Status change failed: " + err.Error()})
 			}
 		}()
+	}
+
+	// setCustomStatus sets a status from the status dialog on the active
+	// workspace, off the UI goroutine, with the same failure toast.
+	setCustomStatus := func(text, emoji string, expiration int64) {
+		wctx := router.Active()
+		if wctx == nil || wctx.Client == nil {
+			return
+		}
+		client := wctx.Client
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := client.SetCustomStatus(ctx, text, emoji, expiration); err != nil && p != nil {
+				p.Send(ui.ToastMsg{Text: "Status change failed: " + err.Error()})
+			}
+		}()
+	}
+	recentStatuses := func(teamID string) ([]core.RecentStatus, error) {
+		wctx := router.ByID(teamID)
+		if wctx == nil || wctx.Client == nil {
+			return nil, fmt.Errorf("workspace %s not connected", teamID)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return wctx.Client.ListRecentStatuses(ctx)
 	}
 
 	// wireCallbacks installs all App callbacks once at startup. Most
@@ -1136,7 +1201,7 @@ func run() error {
 				client := wctx.Client
 				userNames := wctx.UserNames
 				ctx := context.Background()
-				ts, sentMrkdwn, err := client.SendMessage(ctx, chIDStr, text)
+				ts, sentMrkdwn, err := sendWithDraft(ctx, client, wctx.Drafts, chIDStr, "", text, false)
 				if err != nil {
 					log.Printf("Warning: failed to send message: %v", err)
 					return ui.MessageSendFailedMsg{ChannelID: chIDStr, Reason: err.Error()}
@@ -1402,7 +1467,7 @@ func run() error {
 				client := wctx.Client
 				userNames := wctx.UserNames
 				ctx := context.Background()
-				ts, sentMrkdwn, err := client.SendReply(ctx, chIDStr, threadTSStr, text, broadcast)
+				ts, sentMrkdwn, err := sendWithDraft(ctx, client, wctx.Drafts, chIDStr, threadTSStr, text, broadcast)
 				if err != nil {
 					log.Printf("Warning: failed to send thread reply: %v", err)
 					return ui.ThreadReplySendFailedMsg{ChannelID: chIDStr, ThreadTS: threadTSStr, Reason: err.Error()}
@@ -1505,6 +1570,7 @@ func run() error {
 					MessageTS:   string(m.MessageTS),
 					ThreadTS:    string(m.ThreadTS),
 					ChannelName: m.ChannelName,
+					ChannelType: m.ChannelType,
 					AuthorName:  m.AuthorName,
 					Excerpt:     m.Excerpt,
 				})
@@ -1525,6 +1591,7 @@ func run() error {
 						},
 						Letter:      r.Letter,
 						ChannelName: r.ChannelName,
+						ChannelType: r.ChannelType,
 						AuthorName:  r.AuthorName,
 						Excerpt:     r.Excerpt,
 					})
@@ -1601,7 +1668,14 @@ func run() error {
 				}
 				ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 				defer cancel()
-				return runCommand(ctx, wctx.Client, channelID, threadTS, command, args)
+				return runCommand(ctx, wctx.Client, channelID, threadTS, command, args, wctx.AppCommands())
+			},
+			List: func() []core.SlashCommand {
+				wctx := router.Active()
+				if wctx == nil {
+					return nil
+				}
+				return wctx.AppCommands()
 			},
 		}))
 
@@ -1635,6 +1709,36 @@ func run() error {
 			},
 		}))
 
+		app.SetAppViewService(core.NewAppViewService(core.AppViewServiceFuncs{
+			Fetch: func(teamID, viewID string) core.Msg {
+				wctx := router.ByID(teamID)
+				if wctx == nil || wctx.Client == nil {
+					return ui.AppViewLoadedMsg{
+						TeamID: teamID, ViewID: viewID,
+						Err: fmt.Errorf("workspace %q is unavailable", teamID),
+					}
+				}
+				ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+				// views.get is org-served on a Grid member workspace,
+				// like the Home tab's conversations.info fetch.
+				return fetchAppView(ctx, orgOrOwnClient(router, wctx), teamID, viewID)
+			},
+			Press: func(teamID, viewID, serviceID string, action core.AppHomeAction) error {
+				wctx := router.ByID(teamID)
+				if wctx == nil || wctx.Client == nil {
+					return fmt.Errorf("app view: workspace %q is unavailable", teamID)
+				}
+				ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+				return pressAppHomeAction(ctx, orgOrOwnClient(router, wctx), viewID, serviceID, action)
+			},
+		}))
+
+		if cfg.EffectiveSyncDrafts() {
+			app.SetDraftService(draftService(router))
+		}
+
 		sendTyping := func(channelID string) {
 			wctx := router.Active()
 			if wctx == nil {
@@ -1642,7 +1746,7 @@ func run() error {
 			}
 			_ = wctx.Client.SendTyping(channelID)
 		}
-		app.SetPresenceService(core.NewPresenceService(setStatus, sendTyping))
+		app.SetPresenceService(core.NewPresenceService(setStatus, sendTyping, setCustomStatus, recentStatuses))
 
 	}
 
@@ -1706,6 +1810,7 @@ func run() error {
 			UserGroups:       wctx.UserGroups(),
 			SelfUserGroups:   wctx.SelfUserGroups(),
 			SectionsProvider: sectionsProviderAdapter{store: wctx.SectionStore},
+			SectionDefaults:  wctx.SectionDefaults,
 			DefaultChannel:   snap.ResolveDefaultChannel(teamID),
 			// Ordered by reduceWorkspaceSwitched to run after
 			// ResetPresence and the activeTeamID update, so its
@@ -1771,6 +1876,13 @@ func run() error {
 	// a serialized pass-through for non-sixel frames (no marker present)
 	// and the sixel paint site for marked frames.
 	p = tea.NewProgram(app, tea.WithOutput(terminalOutput))
+
+	// `slk --open <permalink>` from another terminal lands here.
+	if ctl, err := startControlSocket(controlSocketPath(), p.Send); err != nil {
+		debuglog.General("control socket disabled: %v", err)
+	} else if ctl != nil {
+		defer ctl.Close()
+	}
 
 	// A palette generator may rewrite a custom theme file. Read the files
 	// here, off the UI goroutine, and register them there: the theme
@@ -2004,8 +2116,9 @@ func run() error {
 				UserGroups:       wctx.UserGroups(),  // empty at this point; filled by the goroutine below
 				SelfUserGroups:   wctx.SelfUserGroups(),
 				SectionsProvider: sectionsProviderAdapter{store: wctx.SectionStore},
+				SectionDefaults:  wctx.SectionDefaults,
 				InitialActive:    isInitial,
-				LastChannelID:    mostRecentlyVisitedChannel(wctx.LastVisitedByChannel),
+				LastChannelID:    mostRecentlyVisitedChannelAmong(wctx.LastVisitedByChannel, channelIDSet(wctx.Channels)),
 				DefaultChannel:   cfgSnap.ResolveDefaultChannel(wctx.TeamID),
 			})
 			// From here on every name the store learns reaches the UI.
@@ -2050,6 +2163,13 @@ func run() error {
 			// for why the bootstrap subset alone must not be treated as
 			// an answer.
 			go refreshWorkspaceEmoji(ctx, wctx, wctx.Client, db, p, wctx.TeamID, wctx.customEmojiFreshFor)
+
+			// Slash-command completion. One fetch per connect, not
+			// stored: the picker reads the pointer when it opens.
+			// A failure leaves the list empty and commands still run.
+			if wctx.Client != nil {
+				go fetchAppCommands(ctx, wctx, wctx.Client)
+			}
 
 			// Fetch workspace usergroups in the background. When done,
 			// send a follow-up so render caches and compose pickers can

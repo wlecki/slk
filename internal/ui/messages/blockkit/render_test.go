@@ -358,6 +358,103 @@ func TestRenderActionsBlockSetsInteractive(t *testing.T) {
 	}
 }
 
+func TestRenderSectionButtonAccessoryRecordsAHit(t *testing.T) {
+	r := Render([]Block{SectionBlock{
+		BlockID: "sec1",
+		Text:    "Not the perfect gif?",
+		Accessory: LabelAccessory{
+			Kind: "button", Label: "Shuffle", ActionID: "shuffle",
+		},
+	}}, Context{}, 80)
+	if len(r.ActionHits) != 1 {
+		t.Fatalf("ActionHits = %d, want the section's button", len(r.ActionHits))
+	}
+	h := r.ActionHits[0]
+	if h.BlockID != "sec1" || h.ActionID != "shuffle" {
+		t.Errorf("hit = %s/%s, want sec1/shuffle", h.BlockID, h.ActionID)
+	}
+	if h.RowStart < 0 || h.RowStart >= len(r.Lines) {
+		t.Fatalf("hit row = %d, outside %d lines", h.RowStart, len(r.Lines))
+	}
+	line := ansi.Strip(r.Lines[h.RowStart])
+	if w := lipgloss.Width(line); h.ColStart >= w || h.ColEnd > w {
+		t.Errorf("hit cols = %d..%d, outside a %d-column line", h.ColStart, h.ColEnd, w)
+	}
+}
+
+// An input block draws read-only: its label, the value or placeholder,
+// and its hint, never the unsupported marker.
+// Every row an input block draws must fit the width the caller counts,
+// even without a wrap function or for a long select placeholder.
+func TestRenderInputBlockFitsRowsToWidth(t *testing.T) {
+	long := strings.Repeat("x", 80)
+	for _, kind := range []string{"static_select", "plain_text_input"} {
+		r := Render([]Block{InputBlock{
+			Label: "Field", Placeholder: long, Hint: long, ElementKind: kind,
+		}}, Context{}, 20)
+		for i, line := range r.Lines {
+			if w := lipgloss.Width(line); w > 20 {
+				t.Errorf("%s line %d is %d columns wide, want <= 20: %q", kind, i, w, ansi.Strip(line))
+			}
+		}
+	}
+}
+
+func TestRenderInputBlockReadOnly(t *testing.T) {
+	r := Render([]Block{InputBlock{
+		Label:       "Justification",
+		Placeholder: "Say why",
+		Hint:        "Optional suggestions only",
+		ElementKind: "plain_text_input",
+	}}, Context{WrapText: func(s string, w int) string { return s }}, 60)
+	plain := ansi.Strip(strings.Join(r.Lines, "\n"))
+	for _, want := range []string{"Justification", "Say why", "Optional suggestions only"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("input block missing %q: %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "unsupported") {
+		t.Errorf("input block rendered as unsupported: %q", plain)
+	}
+}
+
+func TestRenderInputBlockShowsValueOverPlaceholder(t *testing.T) {
+	r := Render([]Block{InputBlock{
+		Label: "Justification", Value: "security bugs", Placeholder: "Say why",
+		ElementKind: "plain_text_input",
+	}}, Context{}, 60)
+	plain := ansi.Strip(strings.Join(r.Lines, "\n"))
+	if !strings.Contains(plain, "security bugs") || strings.Contains(plain, "Say why") {
+		t.Errorf("value/placeholder rendering = %q", plain)
+	}
+}
+
+func TestRenderActionsBlockRecordsButtonHits(t *testing.T) {
+	r := Render([]Block{ActionsBlock{
+		BlockID: "acts",
+		Elements: []ActionElement{
+			{Kind: "button", Label: "Approve", ActionID: "approve"},
+			{Kind: "button", Label: "Deny", ActionID: "deny"},
+		},
+	}}, Context{}, 80)
+	if len(r.ActionHits) != 2 {
+		t.Fatalf("ActionHits = %d, want 2", len(r.ActionHits))
+	}
+	for i, want := range []string{"approve", "deny"} {
+		h := r.ActionHits[i]
+		if h.BlockID != "acts" || h.ActionID != want {
+			t.Errorf("hit %d = block %q action %q, want acts/%s", i, h.BlockID, h.ActionID, want)
+		}
+		if h.RowStart < 0 || h.RowStart >= len(r.Lines) {
+			t.Errorf("hit %d row = %d, outside %d lines", i, h.RowStart, len(r.Lines))
+			continue
+		}
+		if w := lipgloss.Width(r.Lines[h.RowStart]); h.ColStart >= w || h.ColEnd > w {
+			t.Errorf("hit %d cols = %d..%d, outside a %d-column line", i, h.ColStart, h.ColEnd, w)
+		}
+	}
+}
+
 func TestRenderActionsBlockWrapsAtWidth(t *testing.T) {
 	// Three buttons of "[ Long Button Name ]" (~20 cols each) at
 	// width 30 must wrap.
@@ -469,5 +566,39 @@ func TestRenderSectionImageAccessoryEmptyAltUsesGenericLabel(t *testing.T) {
 	plain := ansi.Strip(strings.Join(r.Lines, "\n"))
 	if !strings.Contains(plain, "[image: image]") && !strings.Contains(plain, "[image]") {
 		t.Errorf("expected fallback with default alt, got %q", plain)
+	}
+}
+
+// Actions-block buttons record their footprints, so a host can make
+// them clickable (the app Home tab does).
+func TestRenderActionsRecordsHits(t *testing.T) {
+	r := Render([]Block{
+		SectionBlock{Text: "hi"},
+		ActionsBlock{BlockID: "b1", Elements: []ActionElement{
+			{Kind: "button", Label: "A", ActionID: "a"},
+			{Kind: "button", Label: "B", ActionID: "b"},
+		}},
+	}, Context{}, 40)
+
+	if len(r.ActionHits) != 2 {
+		t.Fatalf("action hits = %d, want 2", len(r.ActionHits))
+	}
+	a, b := r.ActionHits[0], r.ActionHits[1]
+	if a.BlockID != "b1" || a.ActionID != "a" || a.RowStart != 1 || a.ColStart != 0 || a.ColEnd != 5 {
+		t.Errorf("first hit = %+v, want b1/a row 1 cols 0..5", a)
+	}
+	if b.BlockID != "b1" || b.ActionID != "b" || b.RowStart != 1 || b.ColStart != 7 || b.ColEnd != 12 {
+		t.Errorf("second hit = %+v, want b1/b row 1 cols 7..12", b)
+	}
+}
+
+// A legacy attachment passes -1: its synthesized actions block is not in
+// the caller's block slice, so no hits are recorded.
+func TestRenderLegacyActionsRecordNoHits(t *testing.T) {
+	r := RenderLegacy([]LegacyAttachment{{
+		Actions: []LegacyAction{{Name: "a", Text: "A", Type: "button"}},
+	}}, Context{}, 40)
+	if len(r.ActionHits) != 0 {
+		t.Errorf("legacy action hits = %+v, want none", r.ActionHits)
 	}
 }

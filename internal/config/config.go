@@ -35,6 +35,11 @@ type Compose struct {
 	// typed in a row without pressing `i` before each one. Default off:
 	// sending drops back to normal mode, the vim convention.
 	StayInInsertAfterSend bool `toml:"stay_in_insert_after_send"`
+	// SyncDrafts makes the composer's unsent text Slack's own draft for
+	// the conversation (saved while typing, restored on open, marked
+	// sent on send), and enables :drafts. A *bool so unset (nil) is
+	// told from an explicit false; see EffectiveSyncDrafts. Default on.
+	SyncDrafts *bool `toml:"sync_drafts"`
 }
 
 // SectionDef defines a sidebar section with channel name patterns.
@@ -49,9 +54,25 @@ type Compose struct {
 // The ":N" syntax is only honored when use_slack_sections = false
 // (or as a fallback when Slack's section endpoint is unreachable);
 // in Slack-native mode, channels sort alphabetically within Slack's sections.
+//
+// An entry named after a built-in section ("Channels", "Direct Messages",
+// "Apps") needs no Channels: its Order places the built-in among the custom
+// sections, which otherwise all come before it. A custom section without
+// an Order sorts as 0. Collapsed sets whether a section starts collapsed,
+// overriding [sidebar] start_collapsed and the built-in default (Channels
+// and Apps collapsed). Both are only honored when use_slack_sections = false.
 type SectionDef struct {
-	Channels []string `toml:"channels"`
-	Order    int      `toml:"order"` // lower = higher in sidebar
+	Channels  []string `toml:"channels"`
+	Order     *int     `toml:"order"` // lower = higher in sidebar
+	Collapsed *bool    `toml:"collapsed"`
+}
+
+// OrderOrZero is the section's Order, or 0 when it has none.
+func (d SectionDef) OrderOrZero() int {
+	if d.Order == nil {
+		return 0
+	}
+	return *d.Order
 }
 
 // parseChannelPattern splits a "<pattern>:<N>" config entry into its
@@ -95,6 +116,21 @@ type General struct {
 	// j/k move the highlight and / starts the name filter, as in the
 	// help overlay. Default off: typing filters straight away.
 	WorkspacePickerVimKeys bool `toml:"workspace_picker_vim_keys"`
+	// ImageLoading decides which message images (file thumbnails, Block
+	// Kit images, link-preview images) load without asking:
+	//   "trusted" (default) images Slack serves (files.slack.com,
+	//             *.slack-edge.com) and trusted_image_hosts load; any
+	//             other host shows a "not loaded" line until allowed
+	//             with I
+	//   "confirm" every message image waits for I
+	//   "off"     no message image loads; each stays a link
+	// Avatars and custom emoji are not affected (Slack assigns their
+	// URLs). An unrecognised value is treated as "confirm".
+	ImageLoading string `toml:"image_loading"`
+	// TrustedImageHosts are extra hosts whose images load in "trusted"
+	// mode, each also covering its subdomains (e.g. "githubassets.com").
+	// Only https URLs load without asking.
+	TrustedImageHosts []string `toml:"trusted_image_hosts"`
 }
 
 type Appearance struct {
@@ -174,11 +210,13 @@ type Animations struct {
 }
 
 type Notifications struct {
-	Enabled    bool     `toml:"enabled"`
-	OnMention  bool     `toml:"on_mention"`
-	OnDM       bool     `toml:"on_dm"`
-	OnKeyword  []string `toml:"on_keyword"`
-	QuietHours string   `toml:"quiet_hours"`
+	Enabled         bool     `toml:"enabled"`
+	OnMention       bool     `toml:"on_mention"`
+	OnDM            bool     `toml:"on_dm"`
+	OnKeyword       []string `toml:"on_keyword"`
+	OnThreadReply   bool     `toml:"on_thread_reply"`
+	OnActiveChannel bool     `toml:"on_active_channel"`
+	QuietHours      string   `toml:"quiet_hours"`
 	// NotifyCommand, when set, runs instead of the built-in OS notification.
 	// It is executed via `sh -c` with the notification's title and body exposed
 	// as $SLK_TITLE and $SLK_BODY. Example:
@@ -215,6 +253,9 @@ type Sidebar struct {
 	// unread messages, and the currently-selected channel are never
 	// hidden regardless of this setting.
 	HideInactiveAfterDays int `toml:"hide_inactive_after_days"`
+	// SortDMsByRecency orders DMs and group DMs by recent activity
+	// (unread first) instead of by name, as Slack does. Default on.
+	SortDMsByRecency bool `toml:"sort_dms_by_recency"`
 	// RightAlignBadges puts mention badges, and the Threads and Activity
 	// counts drawn as badges, at the right end of their rows, as Slack
 	// does. Default off.
@@ -342,6 +383,7 @@ func Default() Config {
 		General: General{
 			DownloadDir:          "~/Downloads",
 			HideDeactivatedUsers: true,
+			ImageLoading:         "trusted",
 		},
 		Appearance: Appearance{
 			Theme:            "nord",
@@ -378,6 +420,7 @@ func Default() Config {
 		},
 		Sidebar: Sidebar{
 			HideInactiveAfterDays: 30,
+			SortDMsByRecency:      true,
 		},
 	}
 }
@@ -437,6 +480,18 @@ func Load(path string) (Config, error) {
 		cfg.Appearance.KittyPlacement = p
 	default:
 		cfg.Appearance.KittyPlacement = "auto"
+	}
+
+	// Normalise ImageLoading. Unset means the default; an unknown value
+	// (a typo of "off", say) takes the strict side, so a mistake shows
+	// prompts instead of silently loading images.
+	switch il := strings.ToLower(strings.TrimSpace(cfg.General.ImageLoading)); il {
+	case "":
+		cfg.General.ImageLoading = "trusted"
+	case "trusted", "confirm", "off":
+		cfg.General.ImageLoading = il
+	default:
+		cfg.General.ImageLoading = "confirm"
 	}
 
 	// Expand a leading "~" in download_dir against the real home
@@ -527,25 +582,27 @@ func (c Config) MatchSection(teamID, channelName string) string {
 // and (sectionName, 0) when the matching pattern has no explicit
 // order suffix.
 func (c Config) MatchSectionAndOrder(teamID, channelName string) (string, int) {
-	sections := c.Sections
-	if ws, ok := c.WorkspaceByTeamID(teamID); ok && len(ws.Sections) > 0 {
-		sections = ws.Sections
-	}
-	return matchSectionAndOrderIn(sections, channelName)
+	return matchSectionAndOrderIn(c.SectionsFor(teamID), channelName)
 }
 
 // SectionOrder returns the Order field for the named section,
 // resolved through the same workspace-vs-global precedence as
 // MatchSection. Returns 0 if the section is not defined.
 func (c Config) SectionOrder(teamID, sectionName string) int {
-	sections := c.Sections
-	if ws, ok := c.WorkspaceByTeamID(teamID); ok && len(ws.Sections) > 0 {
-		sections = ws.Sections
-	}
-	if def, ok := sections[sectionName]; ok {
-		return def.Order
+	if def, ok := c.SectionsFor(teamID)[sectionName]; ok {
+		return def.OrderOrZero()
 	}
 	return 0
+}
+
+// SectionsFor returns the [sections] entries that apply to a workspace:
+// its own when it defines any, else the global ones. Callers must not
+// write the returned map.
+func (c Config) SectionsFor(teamID string) map[string]SectionDef {
+	if ws, ok := c.WorkspaceByTeamID(teamID); ok && len(ws.Sections) > 0 {
+		return ws.Sections
+	}
+	return c.Sections
 }
 
 // matchSectionAndOrderIn walks sections in Order-ascending order and
@@ -561,7 +618,7 @@ func matchSectionAndOrderIn(sections map[string]SectionDef, channelName string) 
 	}
 	var entries []entry
 	for name, def := range sections {
-		entries = append(entries, entry{name: name, order: def.Order, patterns: def.Channels})
+		entries = append(entries, entry{name: name, order: def.OrderOrZero(), patterns: def.Channels})
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].order < entries[j].order
@@ -598,6 +655,15 @@ func (c Config) EffectiveUseSlackSections(teamID string) bool {
 func (c Config) EffectiveShowJumpOverlay() bool {
 	if c.Marks.ShowJumpOverlay != nil {
 		return *c.Marks.ShowJumpOverlay
+	}
+	return true
+}
+
+// EffectiveSyncDrafts reports [compose] sync_drafts: an explicit value
+// wins, unset is on.
+func (c Config) EffectiveSyncDrafts() bool {
+	if c.Compose.SyncDrafts != nil {
+		return *c.Compose.SyncDrafts
 	}
 	return true
 }

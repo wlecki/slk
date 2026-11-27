@@ -30,6 +30,7 @@ import (
 	"github.com/gammons/slk/internal/debuglog"
 	"github.com/gammons/slk/internal/slack/mrkdwn"
 	"github.com/gammons/slk/internal/slackhttp"
+	"github.com/gammons/slk/internal/ui/messages/blockkit"
 	"github.com/slack-go/slack"
 )
 
@@ -443,13 +444,14 @@ func (c *Client) postChips(ctx context.Context, form url.Values) (string, error)
 // sent is false when no link got a chip, and the caller sends block the
 // ordinary way; also when Slack refused the chips as invalid_blocks, in
 // which case nothing was posted.
-func (c *Client) sendWithChips(ctx context.Context, channelID, threadTS, text string, broadcast bool, block *slack.RichTextBlock) (ts, mr string, sent bool, err error) {
+func (c *Client) sendWithChips(ctx context.Context, channelID, threadTS, text string, broadcast bool, block *slack.RichTextBlock, extra url.Values) (ts, mr string, sent bool, err error) {
 	urls := chipCandidates(block)
 	chips := c.lookupLinkChips(ctx, channelID, urls)
 	if len(chips) == 0 {
 		return "", "", false, nil
 	}
-	mr, block = mrkdwn.Convert(text)
+	block = mrkdwn.Convert(text)
+	mr = blockkit.RichTextToMrkdwn(blockkit.RichTextBlock{Elements: block.Elements})
 	applyChips(block, chips)
 	mr = chipMrkdwn(mr, chips)
 	var chipURLs []string
@@ -461,6 +463,9 @@ func (c *Client) sendWithChips(ctx context.Context, channelID, threadTS, text st
 	form, err := chipPostForm(channelID, threadTS, broadcast, mr, block, chipURLs, newClientMsgID())
 	if err != nil {
 		return "", "", true, err
+	}
+	for k, v := range extra {
+		form[k] = v
 	}
 	ts, err = c.postChips(ctx, form)
 	var refusal slack.SlackErrorResponse

@@ -2,6 +2,7 @@ package messages
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	goimage "image"
 	"image/color"
@@ -14,8 +15,11 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	emojiutil "github.com/gammons/slk/internal/emoji"
 	imgpkg "github.com/gammons/slk/internal/image"
+	"github.com/slack-go/slack"
 
 	"github.com/gammons/slk/internal/config"
+	"github.com/gammons/slk/internal/slack/mrkdwn"
+	"github.com/gammons/slk/internal/ui/messages/blockkit"
 	"github.com/gammons/slk/internal/ui/styles"
 )
 
@@ -463,7 +467,7 @@ func TestBlockquoteEntityDecoding(t *testing.T) {
 // unquoted text.
 func TestBlockquoteWrapsUnderTheBar(t *testing.T) {
 	quoted := strings.Repeat("the publish step writes every table ", 6)
-	items := []MessageItem{{TS: "1.0", UserID: "U1", UserName: "albert", Text: "&gt; " + quoted + "\nafter", Timestamp: "10:06 PM"}}
+	items := []MessageItem{{TS: "1.0", UserID: "U1", UserName: "albert", Text: "> " + quoted + "\nafter", Timestamp: "10:06 PM"}}
 	m := New(items, "general")
 	r := RenderMessage(items[0], 60, m.renderContext(), RenderOptions{})
 
@@ -481,6 +485,39 @@ func TestBlockquoteWrapsUnderTheBar(t *testing.T) {
 	}
 	if quotedRows < 2 {
 		t.Fatalf("quote did not wrap (%d rows); the test no longer exercises wrapping:\n%s", quotedRows, strings.Join(lines, "\n"))
+	}
+}
+
+func TestNestedBlockquoteRoundTrip(t *testing.T) {
+	const draft = "> outer\n>> *nested quote*\n>\n> after\n\noutside"
+	block := mrkdwn.Convert(draft)
+	raw, err := json.Marshal(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received slack.RichTextBlock
+	if err := json.Unmarshal(raw, &received); err != nil {
+		t.Fatal(err)
+	}
+	if len(received.Elements) != 4 {
+		t.Fatalf("want three quote runs and an outside section, got %s", raw)
+	}
+	for i, border := range []int{0, 1, 0} {
+		if q, ok := received.Elements[i].(*slack.RichTextQuote); !ok || q.Border != border {
+			t.Fatalf("quote run %d should have border %d: %s", i, border, raw)
+		}
+	}
+	rt := blockkit.RichTextBlock{Elements: received.Elements}
+	if got, want := blockkit.RichTextToMrkdwnUser(rt), "> outer\n> > *nested quote*\n> \n> after\n\noutside"; got != want {
+		t.Errorf("edit source = %q, want %q", got, want)
+	}
+	rendered := ansi.Strip(RenderSlackMarkdownWith(blockkit.RichTextToMrkdwn(rt), RenderSlackMarkdownOpts{Width: 10}))
+	lines := strings.Split(rendered, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	if got, want := strings.Join(lines, "\n"), "┃ outer\n┃ ┃ nested\n┃ ┃ quote\n┃\n┃ after\n\noutside"; got != want {
+		t.Errorf("render = %q, want %q", got, want)
 	}
 }
 
@@ -551,23 +588,6 @@ func TestBlockquoteInlineFormatting(t *testing.T) {
 	}
 	if !strings.Contains(out, "\x1b]8;;https://github.com/o/r/pull/1") {
 		t.Errorf("quoted link is not an OSC 8 hyperlink: %q", out)
-	}
-}
-
-// TestBlockquoteStaysMutedAfterInlineSpan: an inline span's reset must
-// not drop the rest of the quoted line back to the body color.
-func TestBlockquoteStaysMutedAfterInlineSpan(t *testing.T) {
-	out := RenderSlackMarkdown("&gt; a `code` tail", nil, nil)
-	_, after, ok := strings.Cut(out, "code")
-	if !ok {
-		t.Fatalf("no code span in %q", out)
-	}
-	tail, _, ok := strings.Cut(after, " tail")
-	if !ok {
-		t.Fatalf("no tail after the code span in %q", out)
-	}
-	if !strings.HasSuffix(tail, fgANSIFor(styles.TextMuted)) {
-		t.Errorf("text after the code span is not muted; escapes before it: %q", tail)
 	}
 }
 

@@ -28,7 +28,7 @@ func Render(blocks []Block, ctx Context, width int) RenderResult {
 	}
 	var out RenderResult
 	for _, b := range blocks {
-		appendBlock(&out, b, ctx, width)
+		appendBlock(&out, b, ctx, width, true)
 	}
 	out.Height = len(out.Lines)
 	return out
@@ -65,6 +65,10 @@ func RendersBody(blocks []Block) bool {
 			if len(v.Elements) > 0 {
 				return true
 			}
+		case InputBlock:
+			if v.Label != "" || v.Placeholder != "" || v.Value != "" {
+				return true
+			}
 		}
 	}
 	return false
@@ -73,7 +77,7 @@ func RendersBody(blocks []Block) bool {
 // appendBlock dispatches one block to its renderer and appends the
 // result onto out. Per-block renderers MUST produce lines that each
 // consume <= width display columns.
-func appendBlock(out *RenderResult, b Block, ctx Context, width int) {
+func appendBlock(out *RenderResult, b Block, ctx Context, width int, recordHits bool) {
 	switch v := b.(type) {
 	case DividerBlock:
 		out.Lines = append(out.Lines, renderDivider(width))
@@ -84,11 +88,13 @@ func appendBlock(out *RenderResult, b Block, ctx Context, width int) {
 		}
 		out.Lines = append(out.Lines, renderHeader(text, width))
 	case SectionBlock:
-		appendSection(out, v, ctx, width)
+		appendSection(out, v, ctx, width, recordHits)
 	case ContextBlock:
 		appendContext(out, v, ctx, width)
 	case ActionsBlock:
-		appendActions(out, v, ctx, width)
+		appendActions(out, v, ctx, width, recordHits)
+	case InputBlock:
+		appendInput(out, v, ctx, width)
 	case ImageBlock:
 		appendImageBlock(out, v, ctx, width)
 	case RichTextBlock:
@@ -108,12 +114,13 @@ func appendBlock(out *RenderResult, b Block, ctx Context, width int) {
 	}
 }
 
-func appendSection(out *RenderResult, s SectionBlock, ctx Context, width int) {
+func appendSection(out *RenderResult, s SectionBlock, ctx Context, width int, recordHits bool) {
 	bodyW := width
 	var accessoryLines []string
 	var accessoryW int
 	var accessoryHit *HitRect           // populated for image accessories
 	var accessorySxl map[int]SixelEntry // keyed at fetchOrPlaceholder's rowStart=0; translated after the layout decision below
+	var accessoryAction *ActionHit      // populated for pressable button accessories
 
 	switch acc := s.Accessory.(type) {
 	case LabelAccessory:
@@ -121,10 +128,14 @@ func appendSection(out *RenderResult, s SectionBlock, ctx Context, width int) {
 		accessoryW = lipgloss.Width(label)
 		accessoryLines = []string{label}
 		out.Interactive = true
+		if recordHits && acc.ActionID != "" {
+			accessoryAction = &ActionHit{BlockID: s.BlockID, ActionID: acc.ActionID}
+		}
 	case ImageAccessory:
 		const accRows, accCols = 4, 8
 		if ctx.Fetcher == nil || ctx.Protocol == imgpkg.ProtoOff {
-			label := mutedStyle().Render("[image: " + fallbackAlt(acc.AltText) + "]")
+			label := mutedStyle().Render(fitFallbackLine(width,
+				"[image: "+fallbackAlt(acc.AltText)+"]", "[image]"))
 			accessoryW = lipgloss.Width(label)
 			accessoryLines = []string{label}
 		} else {
@@ -138,7 +149,20 @@ func appendSection(out *RenderResult, s SectionBlock, ctx Context, width int) {
 				h := hit // copy
 				accessoryHit = &h
 			} else {
-				label := mutedStyle().Render("[image: " + fallbackAlt(acc.AltText) + "]")
+				alt := fallbackAlt(acc.AltText)
+				held := ctx.Policy.Decide(acc.URL) == imgpkg.Ask
+				if held {
+					alt += " · not loaded"
+				}
+				// Fitted to the section's width: a stacked accessory is
+				// appended as its own counted row, so an over-wide
+				// label would desync every row below it. See
+				// fitFallbackLine.
+				forms := []string{"[image: " + alt + "]", "[image]"}
+				if held {
+					forms = []string{"[image: " + alt + "]", "[not loaded · I]", "[I]"}
+				}
+				label := mutedStyle().Render(fitFallbackLine(width, forms...))
 				accessoryW = lipgloss.Width(label)
 				accessoryLines = []string{label}
 			}
@@ -188,6 +212,23 @@ func appendSection(out *RenderResult, s SectionBlock, ctx Context, width int) {
 			accessoryHit.ColEnd = accessoryW
 		}
 		out.Hits = append(out.Hits, *accessoryHit)
+	}
+
+	// A button accessory has the same footprint and the same layout
+	// translation as an image accessory.
+	if accessoryAction != nil {
+		if sideBySide {
+			accessoryAction.RowStart = startRow
+			accessoryAction.RowEnd = startRow + len(accessoryLines)
+			accessoryAction.ColStart = bodyW + 2
+			accessoryAction.ColEnd = bodyW + 2 + accessoryW
+		} else {
+			accessoryAction.RowStart = startRow + len(bodyLines)
+			accessoryAction.RowEnd = accessoryAction.RowStart + len(accessoryLines)
+			accessoryAction.ColStart = 0
+			accessoryAction.ColEnd = accessoryW
+		}
+		out.ActionHits = append(out.ActionHits, *accessoryAction)
 	}
 
 	// The accessory's sixel placement gets the same translation as its
@@ -255,7 +296,57 @@ func appendContext(out *RenderResult, c ContextBlock, ctx Context, width int) {
 	}
 }
 
-func appendActions(out *RenderResult, a ActionsBlock, ctx Context, width int) {
+// appendInput draws a Slack input block read-only: its label, the
+// value the view carries or the placeholder the app would show, and its
+// hint. Forms cannot be filled in yet, but the dialog must still be
+// readable.
+func appendInput(out *RenderResult, in InputBlock, ctx Context, width int) {
+	label := in.Label
+	if label == "" {
+		label = "Input"
+	}
+	if in.Optional {
+		label += " (optional)"
+	}
+	out.Lines = append(out.Lines, fieldLabelStyle().Render(truncateToWidth(label, width)))
+
+	text, style := in.Value, lipgloss.NewStyle().
+		Foreground(styles.TextPrimary).Background(styles.Background)
+	if text == "" {
+		text = in.Placeholder
+		style = mutedStyle().Italic(true)
+	}
+	switch in.ElementKind {
+	case "", "plain_text_input", "unknown":
+		if text == "" {
+			text = "—"
+		}
+		body := text
+		if ctx.WrapText != nil {
+			body = ctx.WrapText(text, max(1, width-2))
+		}
+		rows := strings.Split(body, "\n")
+		bar := controlStyle().Render("▌ ")
+		out.Lines = append(out.Lines, fitFallbackLine(width, bar+style.Render(rows[0])))
+		for _, row := range rows[1:] {
+			out.Lines = append(out.Lines, fitFallbackLine(width, "  "+style.Render(row)))
+		}
+	default:
+		out.Lines = append(out.Lines, fitFallbackLine(width,
+			renderControlLabel(in.ElementKind, text, ctx.RenderPlainText)))
+	}
+	if in.Hint != "" {
+		hint := in.Hint
+		if ctx.WrapText != nil {
+			hint = ctx.WrapText(hint, width)
+		}
+		for _, row := range strings.Split(hint, "\n") {
+			out.Lines = append(out.Lines, fitFallbackLine(width, mutedStyle().Render(row)))
+		}
+	}
+}
+
+func appendActions(out *RenderResult, a ActionsBlock, ctx Context, width int, recordHits bool) {
 	if len(a.Elements) == 0 {
 		return
 	}
@@ -266,7 +357,22 @@ func appendActions(out *RenderResult, a ActionsBlock, ctx Context, width int) {
 	for i, el := range a.Elements {
 		labels[i] = renderControlLabel(el.Kind, el.Label, ctx.RenderPlainText)
 	}
-	out.Lines = append(out.Lines, buttonrow.Rows(buttonrow.Layout(labels, width, gapW), gapW)...)
+	placed := buttonrow.Layout(labels, width, gapW)
+	if recordHits {
+		// The caller can press what it sees: record each element's
+		// footprint in Lines coordinates. Legacy attachments pass
+		// false (their block is synthesized, and its host does not
+		// press it).
+		rowStart := len(out.Lines)
+		for _, p := range placed {
+			out.ActionHits = append(out.ActionHits, ActionHit{
+				BlockID: a.BlockID, ActionID: a.Elements[p.Index].ActionID,
+				RowStart: rowStart + p.Row, RowEnd: rowStart + p.Row + 1,
+				ColStart: p.Col, ColEnd: p.Col + p.Width,
+			})
+		}
+	}
+	out.Lines = append(out.Lines, buttonrow.Rows(placed, gapW)...)
 }
 
 // appendImageBlock renders a Slack image block: an optional bold
@@ -288,7 +394,7 @@ func appendImageBlock(out *RenderResult, b ImageBlock, ctx Context, width int) {
 
 	// If we can't render images at all, emit the fallback link.
 	if ctx.Fetcher == nil || ctx.Protocol == imgpkg.ProtoOff {
-		out.Lines = append(out.Lines, renderImageFallback(b.URL))
+		out.Lines = append(out.Lines, renderImageFallback(b.URL, width))
 		return
 	}
 
@@ -297,14 +403,14 @@ func appendImageBlock(out *RenderResult, b ImageBlock, ctx Context, width int) {
 	// to a reasonable default aspect.
 	target := computeBlockImageTarget(b, ctx, width)
 	if target.X <= 0 || target.Y <= 0 {
-		out.Lines = append(out.Lines, renderImageFallback(b.URL))
+		out.Lines = append(out.Lines, renderImageFallback(b.URL, width))
 		return
 	}
 
 	rowStart := len(out.Lines)
 	lines, flushes, sxlMap, hit, ok := fetchOrPlaceholder(b.URL, target, ctx, rowStart)
 	if !ok {
-		out.Lines = append(out.Lines, renderImageFallback(b.URL))
+		out.Lines = append(out.Lines, imageFallback(ctx, b.URL, width))
 		return
 	}
 	out.Lines = append(out.Lines, lines...)

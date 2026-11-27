@@ -82,6 +82,10 @@ type WorkspaceContext struct {
 	// channelitem.go's resolver and the sectionsProviderAdapter both
 	// nil-check it before use.
 	SectionStore *service.SectionStore
+	// SectionDefaults is what the config's [sections] entries say about
+	// ordering and collapse, for the sidebar's config mode. Built once at
+	// connect and never written afterwards, so the UI may share it.
+	SectionDefaults map[string]sidebar.SectionDefault
 	// MuteStore tracks which channels the user has muted (Slack stores
 	// this in the user prefs blob, not on the channel objects). The
 	// sidebar uses it to suppress unread dots and apply a dimmer
@@ -153,6 +157,12 @@ type WorkspaceContext struct {
 	// meanwhile make it fetch once more instead of starting their own.
 	emojiRefetching     bool
 	emojiRefetchPending bool
+	// appCommands is this workspace's slash commands from
+	// client.appCommands. Access it via AppCommands/SetAppCommands.
+	// The slice is published whole and never mutated. Nil until the
+	// fetch lands; a failed fetch leaves it nil, so chat.command omits
+	// team_id and the slash picker stays closed.
+	appCommands atomic.Pointer[[]core.SlashCommand]
 	// userGroups holds this workspace's usergroup ID -> handle map.
 	// Access it via UserGroups/SetUserGroups, never directly.
 	//
@@ -213,6 +223,9 @@ type WorkspaceContext struct {
 	// in connectWorkspace alongside UserResolver (it depends on the
 	// resolver to trigger external-user lookups for newly-seen IDs).
 	Membership *membership.Manager
+	// Drafts syncs this workspace's composer drafts with Slack. Nil when
+	// [compose] sync_drafts is off.
+	Drafts *draftEngine
 }
 
 // IsBotUser reports whether userID has been classified as an app or bot.
@@ -352,6 +365,32 @@ func (w *WorkspaceContext) SetCustomEmoji(emojis map[string]string) {
 	w.customEmoji.Store(&emojis)
 }
 
+// AppCommands returns this workspace's slash commands, or nil before
+// client.appCommands has landed. The result must be treated as read-only.
+func (w *WorkspaceContext) AppCommands() []core.SlashCommand {
+	if w == nil {
+		return nil
+	}
+	if p := w.appCommands.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// SetAppCommands publishes the workspace's slash commands. The stored
+// slice is a copy, so the caller may reuse cmds.
+func (w *WorkspaceContext) SetAppCommands(cmds []core.SlashCommand) {
+	if w == nil {
+		return
+	}
+	var stored []core.SlashCommand
+	if cmds != nil {
+		stored = make([]core.SlashCommand, len(cmds))
+		copy(stored, cmds)
+	}
+	w.appCommands.Store(&stored)
+}
+
 // workspaceRouter is the program-wide registry of connected
 // workspaces. active is the one the user is looking at:
 // wireCallbacks(router) is invoked ONCE at startup, and every
@@ -418,9 +457,29 @@ func (r *workspaceRouter) All() []*WorkspaceContext {
 // last-visited timestamp, or "" when there are no recorded visits (e.g.
 // the first run). Drives last-channel restoration on startup.
 func mostRecentlyVisitedChannel(visits map[string]int64) string {
+	return mostRecentlyVisitedChannelAmong(visits, nil)
+}
+
+// channelIDSet is the set of conversation IDs a workspace can show.
+func channelIDSet(channels []sidebar.ChannelItem) map[string]bool {
+	out := make(map[string]bool, len(channels))
+	for _, ch := range channels {
+		out[ch.ID] = true
+	}
+	return out
+}
+
+// mostRecentlyVisitedChannelAmong is mostRecentlyVisitedChannel
+// restricted to conversations the caller can show. A Grid shared DM's
+// visit is global, but a workspace that does not list the DM must not
+// pick it over its own last channel.
+func mostRecentlyVisitedChannelAmong(visits map[string]int64, known map[string]bool) string {
 	var bestID string
 	var bestTS int64
 	for id, ts := range visits {
+		if known != nil && !known[id] {
+			continue
+		}
 		if ts > bestTS {
 			bestTS = ts
 			bestID = id

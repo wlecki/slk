@@ -23,7 +23,8 @@ the status bar beside the prompt, with the current one highlighted.
 |---|---|---|
 | `:ws` | `1`–`9` jumps straight to a workspace | Open the workspace picker |
 | `:activity` | `Ctrl+a`, or the sidebar's ◉ Activity row | Open the Activity view (mentions, thread replies, reactions to your messages, DMs) |
-| `:huddle` | `H` | Copy the huddle link of the conversation on screen. With the thread pane focused it's the thread's channel; in the Threads or Activity view, the highlighted row's |
+| `:drafts` | the sidebar's ✎ Drafts row, directly under Threads | List this workspace's Slack drafts. The sidebar opens them in the message pane (`Enter` jumps, `d` deletes); `:drafts` opens the same list as a dialog. Needs `[compose] sync_drafts` |
+| `:huddle` | `H` | Copy the huddle link of the conversation on screen. With the thread pane focused it's the thread's channel; in the Threads, Drafts or Activity view, the highlighted row's |
 | `:marks` | `'` (unless `[marks] show_jump_overlay` is off) | List every mark in the workspace with its channel and a preview of the message. `:marks` always shows the list, whatever `show_jump_overlay` says |
 | `:delmarks abc` | `Backspace` on a row in `:marks` | Delete marks by letter. `:delmarks a b c` works too; letters with no mark are ignored |
 | `:compact` | `appearance.compact` config option | Switch between standard and compact styles |
@@ -102,5 +103,11 @@ can see.
   "/name is not a valid command") and puts what you typed back in the
   composer, unless you've started typing something else there by then.
 
-slk doesn't have a picker listing the workspace's commands yet, so you need
-to know the command's name.
+Once the workspace's commands have loaded, typing `/` at the start of an
+empty composer opens a list of them plus slk's own commands. Each row is
+the command, its usage, and a one-line description. Tab or Enter fills in
+`/name ` and leaves it unrun; Esc closes the list; a space closes it so
+you can type arguments. Enter runs the command once the list is closed.
+Aliases such as `/dm` are not listed; typing one in full still runs it.
+If the command list never loads, the popup stays closed and typed
+commands still run.

@@ -278,18 +278,19 @@ func wrapLine(buf *strings.Builder, line string, limit int) {
 		return
 	}
 
+	var out strings.Builder
 	currentWidth := 0
 	writeWord := func(w string) {
 		// w may itself be wider than limit; hard-break by display columns.
 		// ansi.Hardwrap is ANSI-aware and grapheme-aware.
 		wWidth := lipgloss.Width(w)
 		if wWidth <= limit {
-			buf.WriteString(w)
+			out.WriteString(w)
 			currentWidth = wWidth
 			return
 		}
 		wrapped := ansi.Hardwrap(w, limit, false)
-		buf.WriteString(wrapped)
+		out.WriteString(wrapped)
 		// Track width of the trailing segment so a following word can
 		// share its line if it fits.
 		if nl := strings.LastIndexByte(wrapped, '\n'); nl >= 0 {
@@ -307,13 +308,72 @@ func wrapLine(buf *strings.Builder, line string, limit int) {
 		}
 		// +1 for the space before the word
 		if currentWidth+1+wordWidth > limit {
-			buf.WriteByte('\n')
+			out.WriteByte('\n')
 			writeWord(word)
 		} else {
-			buf.WriteByte(' ')
-			buf.WriteString(word)
+			out.WriteByte(' ')
+			out.WriteString(word)
 			currentWidth += 1 + wordWidth
 		}
+	}
+	buf.WriteString(reopenOsc8Lines(out.String()))
+}
+
+// reopenOsc8Lines makes every line of a wrapped hyperlink carry its own
+// OSC 8 open and close marker. ansi.Hardwrap leaves the original opener
+// on the first segment and the closer on the last, so the middle rows
+// have no marker of their own: ScanOsc8Spans cannot register them and a
+// click falls through to the message. Reopening each row makes every
+// wrapped segment a complete span, with the label - not the pane border
+// or avatar gutter - as its columns.
+func reopenOsc8Lines(s string) string {
+	lines := strings.Split(s, "\n")
+	carry := ""
+	changed := false
+	for i, line := range lines {
+		start := carry
+		active := osc8StateAfter(line, start)
+		if start == "" && active == "" {
+			continue
+		}
+		changed = true
+		var b strings.Builder
+		if start != "" {
+			b.WriteString(osc8Open + start + "\x1b\\")
+		}
+		b.WriteString(line)
+		if active != "" {
+			b.WriteString("\x1b]8;;\x1b\\")
+		}
+		lines[i] = b.String()
+		carry = active
+	}
+	if !changed {
+		return s
+	}
+	return strings.Join(lines, "\n")
+}
+
+// osc8StateAfter returns the hyperlink open at the end of line, starting
+// with active. An empty URL closes the link.
+func osc8StateAfter(line, active string) string {
+	rest := line
+	for {
+		i := strings.Index(rest, osc8Open)
+		if i < 0 {
+			return active
+		}
+		payload := rest[i+len(osc8Open):]
+		st := strings.Index(payload, "\x1b\\")
+		if st < 0 {
+			return active
+		}
+		if payload[:st] == "" {
+			active = ""
+		} else {
+			active = payload[:st]
+		}
+		rest = payload[st+2:]
 	}
 }
 
@@ -409,7 +469,26 @@ func RepaintBgToSelectionTint(s string, focused bool) string {
 // RepaintBgToMentionTint is RepaintBgToSelectionTint for the
 // highlight of a message that mentions the user.
 func RepaintBgToMentionTint(s string) string {
-	return repaintBg(s, bgANSIFor(styles.MentionHighlightBg()))
+	return repaintBg(s, MentionTintBgANSI())
+}
+
+// MentionTintBgANSI returns the background ANSI for a row that mentions
+// the user.
+func MentionTintBgANSI() string {
+	return bgANSIFor(styles.MentionHighlightBg())
+}
+
+// MarginBgANSI returns the background for the blank cells a sixel
+// avatar's cursor advance leaves right of and below the image: the
+// selected row's tint, a mention row's tint, or the theme background.
+func MarginBgANSI(selected, focused, mentionsSelf bool) string {
+	if selected {
+		return SelectionTintBgANSI(focused)
+	}
+	if mentionsSelf {
+		return MentionTintBgANSI()
+	}
+	return BgANSI()
 }
 
 // repaintBg is RepaintBgToSelectionTint for any tint, given as its bg
@@ -752,6 +831,10 @@ type RenderSlackMarkdownOpts struct {
 	EmojiCells   int                      // 0 falls back to 2
 	Customs      map[string]string        // workspace custom emoji map; may be nil
 	EmojiFlushes *[]func(io.Writer) error // append-only; may be nil
+	// InlineSixel places emoji as sixel images inside the text
+	// (message bodies on a sixel terminal). nil keeps the glyph/text or
+	// kitty path.
+	InlineSixel *emojiutil.InlineSixel
 
 	// Width is the content width the result will be wrapped to. A
 	// fenced code block is hard-wrapped and padded to exactly this width
@@ -812,32 +895,46 @@ func RenderSlackMarkdownWith(text string, opts RenderSlackMarkdownOpts) string {
 		return "\n" + codeBlockStyle().Render(inner) + "\n"
 	})
 
-	// Process line by line for blockquotes
+	// Process line by line for lists and blockquotes
 	lines := strings.Split(text, "\n")
 	var result []string
 	for _, line := range lines {
-		if strings.HasPrefix(line, "&gt; ") || strings.HasPrefix(line, "> ") {
-			quoted := strings.TrimPrefix(line, "&gt; ")
-			quoted = strings.TrimPrefix(quoted, "> ")
-			quoted = renderInlineFormattingWith(quoted, opts)
-			quoted = slackEntityDecoder.Replace(quoted)
+		quoteLevel := 0
+		for strings.HasPrefix(line, "> ") {
+			quoteLevel += 1
+			line = strings.TrimPrefix(line, "> ")
+		}
+
+		noIndent := line
+		var indent strings.Builder
+		for strings.HasPrefix(noIndent, "  ") {
+			noIndent = strings.TrimPrefix(noIndent, "  ")
+			indent.WriteString("  ")
+		}
+		if strings.HasPrefix(noIndent, "- ") || strings.HasPrefix(noIndent, "* ") {
+			// Rebuild the list item, but with a properly rendered list indicator
+			line = indent.String() + "• " + noIndent[2:]
+		}
+
+		line = renderInlineFormattingWith(line, opts)
+		if quoteLevel > 0 {
 			// Inline spans end in a reset that would drop the rest of
 			// the quote out of its muted color.
-			quoted = ReapplyBgAfterResets(quoted, fgANSIFor(styles.TextMuted))
+			line = ReapplyBgAfterResets(line, fgANSIFor(styles.TextMuted))
 			// Wrap before drawing the bar so every wrapped row gets one;
 			// the body wrap that runs later would continue the quote
 			// without it. The bar and its padding take two columns.
-			if w := opts.Width; w > 2 {
-				quoted = WordWrap(quoted, w-2)
+			if w := opts.Width; w > quoteLevel*2 {
+				line = WordWrap(line, w-quoteLevel*2)
 			}
-			line = blockquoteStyle().Render(quoted)
-		} else {
-			line = renderInlineFormattingWith(line, opts)
-			// Decode Slack-escaped entities after markup regexes have
-			// consumed legitimate <...> markers, so escaped user input
-			// (e.g. literal "<@U1>") doesn't become a fake mention.
-			line = slackEntityDecoder.Replace(line)
+			for range quoteLevel {
+				line = blockquoteStyle().Render(line)
+			}
 		}
+		// Decode Slack-escaped entities after markup regexes have
+		// consumed legitimate <...> markers, so escaped user input
+		// (e.g. literal "<@U1>") doesn't become a fake mention.
+		line = slackEntityDecoder.Replace(line)
 		result = append(result, line)
 	}
 
@@ -1004,11 +1101,87 @@ func renderInlineFormattingWith(text string, opts RenderSlackMarkdownOpts) strin
 
 // renderEmojiWith shares emoji placement between mrkdwn and plain-text labels.
 func renderEmojiWith(text string, opts RenderSlackMarkdownOpts) string {
-	if emojiutil.ImageModeActive() && opts.PlaceCtx.Fetcher != nil {
-		tokens := emojiutil.ResolveEmojiToTokens(text, opts.Customs)
-		return renderEmojiTokensInline(tokens, opts.PlaceCtx, opts.EmojiCells, opts.EmojiFlushes)
+	render := func(s string) string {
+		if opts.InlineSixel != nil {
+			return renderEmojiTokensSixel(emojiutil.ResolveEmojiToTokens(s, opts.Customs), opts.InlineSixel, opts.Customs)
+		}
+		if emojiutil.ImageModeActive() && opts.PlaceCtx.Fetcher != nil {
+			tokens := emojiutil.ResolveEmojiToTokens(s, opts.Customs)
+			return renderEmojiTokensInline(tokens, opts.PlaceCtx, opts.EmojiCells, opts.EmojiFlushes)
+		}
+		return emojiutil.ResolveShortcodesInText(emojiutil.StripSkinToneFromText(s))
 	}
-	return emojiutil.ResolveShortcodesInText(emojiutil.StripSkinToneFromText(text))
+	// OSC 8 targets are machine text: a shortcode-looking path segment
+	// there must not become an emoji (or, worse, an image marker).
+	// Resolve only the visible text between the escape sequences.
+	return mapOutsideOsc8(text, render)
+}
+
+// mapOutsideOsc8 applies fn to the visible text of s, copying every OSC
+// 8 control sequence (the opener carrying its URL and the closer)
+// verbatim. A link's label is visible text and is mapped.
+func mapOutsideOsc8(s string, fn func(string) string) string {
+	var b strings.Builder
+	for {
+		i := strings.Index(s, osc8Open)
+		if i < 0 {
+			b.WriteString(fn(s))
+			return b.String()
+		}
+		b.WriteString(fn(s[:i]))
+		rest := s[i+len(osc8Open):]
+		st := strings.Index(rest, "\x1b\\")
+		bel := strings.IndexByte(rest, '\a')
+		end, termLen := -1, 0
+		switch {
+		case st >= 0 && (bel < 0 || st < bel):
+			end, termLen = st, 2
+		case bel >= 0:
+			end, termLen = bel, 1
+		}
+		if end < 0 {
+			// Unterminated sequence: leave the rest untouched rather
+			// than risk rewriting a target.
+			b.WriteString(s[i:])
+			return b.String()
+		}
+		b.WriteString(s[i : i+len(osc8Open)+end+termLen])
+		s = rest[end+termLen:]
+	}
+}
+
+// renderEmojiTokensSixel writes a marker for each custom emoji the sink
+// can place as a sixel image. Everything else keeps its glyph or text:
+// standard emoji have Unicode glyphs and read better as glyphs, and an
+// unresolved name or failed image must stay readable.
+func renderEmojiTokensSixel(tokens []emojiutil.Token, sink *emojiutil.InlineSixel, customs map[string]string) string {
+	var b strings.Builder
+	for _, tok := range tokens {
+		if tok.Kind == emojiutil.TokenEmoji && isCustomEmojiToken(tok.Text, customs) {
+			if marker, ok := sink.Place(tok.URL); ok {
+				b.WriteString(marker)
+				continue
+			}
+		}
+		b.WriteString(emojiutil.ResolveShortcodesInText(emojiutil.StripSkinToneFromText(tok.Text)))
+	}
+	return b.String()
+}
+
+// isCustomEmojiToken reports whether a token's source text is a
+// workspace custom-emoji shortcode. A toned spelling keeps its
+// "::skin-tone-N" suffix, so the base name is what the customs map
+// holds.
+func isCustomEmojiToken(text string, customs map[string]string) bool {
+	if len(customs) == 0 || len(text) < 2 || text[0] != ':' || text[len(text)-1] != ':' {
+		return false
+	}
+	name := strings.Trim(text, ":")
+	if i := strings.Index(name, "::"); i >= 0 {
+		name = name[:i]
+	}
+	_, ok := customs[name]
+	return ok
 }
 
 // renderEmojiTokensInline walks a Token stream and returns the
@@ -1093,9 +1266,8 @@ func SlackMrkdwnToCommonMarkWithUserGroups(text string, userNames map[string]str
 	lines := strings.Split(text, "\n")
 	var result []string
 	for _, line := range lines {
-		if strings.HasPrefix(line, "&gt; ") || strings.HasPrefix(line, "> ") {
-			quoted := strings.TrimPrefix(line, "&gt; ")
-			quoted = strings.TrimPrefix(quoted, "> ")
+		if strings.HasPrefix(line, "> ") {
+			quoted := strings.TrimPrefix(line, "> ")
 			quoted = slackMrkdwnToCommonMarkInline(quoted, userNames, channelNames, userGroups)
 			quoted = slackEntityDecoder.Replace(quoted)
 			line = "> " + quoted

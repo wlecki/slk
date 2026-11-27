@@ -11,6 +11,8 @@ import (
 	"github.com/gammons/slk/internal/bubbles/channelpicker"
 	"github.com/gammons/slk/internal/bubbles/linkpicker"
 	"github.com/gammons/slk/internal/core"
+	"github.com/gammons/slk/internal/core/blocks"
+	"github.com/gammons/slk/internal/ui/draftlist"
 	"github.com/gammons/slk/internal/ui/help"
 	"github.com/gammons/slk/internal/ui/marks"
 	"github.com/gammons/slk/internal/ui/mentionpicker"
@@ -131,6 +133,7 @@ func dialogGoldens() []dialogGolden {
 	presShown := func(a *App) bool { return a.presenceMenu.IsVisible() }
 	finderShown := func(a *App) bool { return a.channelFinder.IsVisible() }
 	marksShown := func(a *App) bool { return a.marksOverlay.IsVisible() }
+	draftsShown := func(a *App) bool { return a.draftList.IsVisible() }
 	reactShown := func(a *App) bool { return a.reactionPicker.IsVisible() }
 	newMsgShown := func(a *App) bool { return a.newMessagePicker.IsVisible() }
 	helpShown := func(a *App) bool { return a.help.IsVisible() }
@@ -162,6 +165,28 @@ func dialogGoldens() []dialogGolden {
 	}
 
 	return []dialogGolden{
+		{
+			name: "dialog_app_view", want: "AI Budget Support",
+			shown: func(a *App) bool { return a.mode == ModeAppView && a.appView.Current() != nil },
+			open: func(t *testing.T, a *App) {
+				a.appView.SetView(&core.AppView{
+					ViewID:     "V1",
+					Title:      "AI Budget Support",
+					CloseLabel: "Close",
+					Blocks: []blocks.Block{
+						blocks.HeaderBlock{Text: "Your AI Budget"},
+						blocks.SectionBlock{Text: "Budget: $400 · Spent: $346 (87%)"},
+						blocks.ActionsBlock{BlockID: "b1", Elements: []blocks.ActionElement{
+							{Kind: "button", Label: "Request budget increase", ActionID: "req_open"},
+						}},
+					},
+					Actions: []core.AppHomeAction{
+						{ActionID: "req_open", BlockID: "b1", Label: "Request budget increase"},
+					},
+				})
+				a.SetMode(ModeAppView)
+			},
+		},
 		{
 			name: "dialog_theme_switcher", want: "Switch Theme", shown: themeShown,
 			open: func(t *testing.T, a *App) {
@@ -215,6 +240,15 @@ func dialogGoldens() []dialogGolden {
 			},
 		},
 		{
+			name: "dialog_presence_menu_recent", want: "☕ On a break", shown: presShown,
+			open: func(t *testing.T, a *App) {
+				a.presenceMenu.SetRecent([]core.RecentStatus{{Text: "On a break", Emoji: ":coffee:"}, {Text: "Heads down"}})
+				a.presenceMenu.OpenWith("Acme", "active", false, time.Time{})
+				repeat(6, func() { a.presenceMenu.HandleKey("down") })
+				a.SetMode(ModePresenceMenu)
+			},
+		},
+		{
 			name: "dialog_presence_menu_no_match", want: "No matching options", shown: presShown,
 			open: func(t *testing.T, a *App) {
 				a.presenceMenu.OpenWith("Acme", "active", false, time.Time{})
@@ -228,6 +262,24 @@ func dialogGoldens() []dialogGolden {
 			open: func(t *testing.T, a *App) {
 				a.slackLinkInput = "https://acme.slack.com/archives/C1/p1700000000000000"
 				a.SetMode(ModeOpenSlackLink)
+			},
+		},
+		{
+			name: "dialog_status", want: "Set a status — Acme",
+			shown: func(a *App) bool { return a.mode == ModeStatusDialog },
+			open: func(t *testing.T, a *App) {
+				a.statusDialog.Open("Acme")
+				a.statusDialog.SetEmoji("coffee")
+				a.statusDialog.Insert("On a break")
+				a.SetMode(ModeStatusDialog)
+			},
+		},
+		{
+			name: "dialog_status_empty", want: "What's your status?",
+			shown: func(a *App) bool { return a.mode == ModeStatusDialog },
+			open: func(t *testing.T, a *App) {
+				a.statusDialog.Open("Acme")
+				a.SetMode(ModeStatusDialog)
 			},
 		},
 		{
@@ -283,6 +335,18 @@ func dialogGoldens() []dialogGolden {
 				a.marksOverlay.SetRows(nil)
 				a.marksOverlay.Open()
 				a.SetMode(ModeMarks)
+			},
+		},
+		{
+			name: "dialog_drafts", want: "Drafts", shown: draftsShown,
+			open: func(t *testing.T, a *App) {
+				a.draftList.SetRows([]draftlist.Row{
+					{Destination: "#general", Age: "5m", Preview: "hello there"},
+					{Destination: "#ops › thread", Age: "2h", Marker: "scheduled Dec 1 9:00 AM", Preview: "deploy at nine"},
+					{Destination: "(no recipient)", Age: "Jan 2", Marker: "saved", Preview: "an idea for later"},
+				})
+				a.draftList.Open()
+				a.SetMode(ModeDrafts)
 			},
 		},
 		{
@@ -446,6 +510,25 @@ func dialogGoldens() []dialogGolden {
 				a.SetMode(ModeInsert)
 				_ = a.compose.Focus()
 				typeInCompose(a, ":sm")
+			},
+		},
+		{
+			name:  "popup_slash_command",
+			want:  "/giphy",
+			shown: func(a *App) bool { return a.compose.PopupView(80) != "" },
+			open: func(t *testing.T, a *App) {
+				a.SetCommandService(core.NewCommandService(core.CommandServiceFuncs{
+					List: func() []core.SlashCommand {
+						return []core.SlashCommand{
+							{Name: "/giphy", Usage: "[text]", Desc: "Post a random gif"},
+							{Name: "/linear", Usage: "issue title", Desc: "Create a Linear issue", AppName: "Linear"},
+							{Name: "/dm", AliasOf: "/msg", Desc: "hidden alias"},
+						}
+					},
+				}))
+				a.SetMode(ModeInsert)
+				_ = a.compose.Focus()
+				typeInCompose(a, "/")
 			},
 		},
 	}

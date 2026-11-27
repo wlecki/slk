@@ -44,6 +44,8 @@ func parseOne(b slack.Block) Block {
 		}
 	case *slack.ActionBlock:
 		return parseActions(v)
+	case *slack.InputBlock:
+		return parseInput(v)
 	case *slack.RichTextBlock:
 		return RichTextBlock{Elements: v.Elements}
 	default:
@@ -52,7 +54,7 @@ func parseOne(b slack.Block) Block {
 }
 
 func parseSection(s *slack.SectionBlock) SectionBlock {
-	out := SectionBlock{Text: textOf(s.Text)}
+	out := SectionBlock{BlockID: s.BlockID, Text: textOf(s.Text)}
 	for _, f := range s.Fields {
 		out.Fields = append(out.Fields, textOf(f))
 	}
@@ -82,8 +84,48 @@ func parseContext(c *slack.ContextBlock) ContextBlock {
 	return out
 }
 
+// parseInput turns an input block into the read-only form the renderer
+// draws: its label, a value or placeholder to show, and the element
+// kind for the control look.
+func parseInput(in *slack.InputBlock) InputBlock {
+	out := InputBlock{
+		BlockID:  in.BlockID,
+		Label:    textOf(in.Label),
+		Hint:     textOf(in.Hint),
+		Optional: in.Optional,
+	}
+	switch el := in.Element.(type) {
+	case *slack.PlainTextInputBlockElement:
+		out.ElementKind = "plain_text_input"
+		out.Placeholder = textOf(el.Placeholder)
+		out.Value = el.InitialValue
+		out.Multiline = el.Multiline
+	case *slack.SelectBlockElement:
+		out.ElementKind = "static_select"
+		out.Placeholder = textOf(el.Placeholder)
+	case *slack.MultiSelectBlockElement:
+		out.ElementKind = "multi_select"
+		out.Placeholder = textOf(el.Placeholder)
+	case *slack.DatePickerBlockElement:
+		out.ElementKind = "datepicker"
+		out.Value = el.InitialDate
+	case *slack.TimePickerBlockElement:
+		out.ElementKind = "timepicker"
+		out.Value = el.InitialTime
+	case *slack.RadioButtonsBlockElement:
+		out.ElementKind = "radio_buttons"
+	case *slack.CheckboxGroupsBlockElement:
+		out.ElementKind = "checkboxes"
+	case *slack.OverflowBlockElement:
+		out.ElementKind = "overflow"
+	default:
+		out.ElementKind = "unknown"
+	}
+	return out
+}
+
 func parseActions(a *slack.ActionBlock) ActionsBlock {
-	out := ActionsBlock{}
+	out := ActionsBlock{BlockID: a.BlockID}
 	if a.Elements == nil {
 		return out
 	}
@@ -102,7 +144,9 @@ func parseAccessory(a *slack.Accessory) AccessoryElement {
 		}
 		return ImageAccessory{URL: url, AltText: a.ImageElement.AltText}
 	case a.ButtonElement != nil:
-		return LabelAccessory{Kind: "button", Label: textOf(a.ButtonElement.Text)}
+		// A button accessory is pressable, with the same identity an
+		// actions-block button carries, so the two structs convert.
+		return LabelAccessory(actionElementOf(a.ButtonElement))
 	case a.OverflowElement != nil:
 		return LabelAccessory{Kind: "overflow", Label: ""}
 	case a.SelectElement != nil:
@@ -127,7 +171,19 @@ func parseAccessory(a *slack.Accessory) AccessoryElement {
 func actionElementOf(e slack.BlockElement) ActionElement {
 	switch v := e.(type) {
 	case *slack.ButtonBlockElement:
-		return ActionElement{Kind: "button", Label: textOf(v.Text)}
+		el := ActionElement{
+			Kind: "button", Label: textOf(v.Text),
+			ActionID: v.ActionID, Value: v.Value, URL: v.URL, Style: string(v.Style),
+		}
+		if c := v.Confirm; c != nil {
+			el.Confirm = &ActionConfirm{
+				Title:       textOf(c.Title),
+				Text:        textOf(c.Text),
+				OKText:      textOf(c.Confirm),
+				DismissText: textOf(c.Deny),
+			}
+		}
+		return el
 	case *slack.OverflowBlockElement:
 		return ActionElement{Kind: "overflow"}
 	case *slack.SelectBlockElement:

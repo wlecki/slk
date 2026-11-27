@@ -198,7 +198,7 @@ func (a *App) setStatusReporterForTest(fn func(unread, otherUnread int, workspac
 }
 
 func (a *App) setStatusSetterForTest(fn func(action core.PresenceAction, snoozeMinutes int)) {
-	a.SetPresenceService(core.NewPresenceService(fn, nil))
+	a.SetPresenceService(core.NewPresenceService(fn, nil, nil, nil))
 }
 
 func (a *App) setThemeSaverForTest(fn func(teamID, name string, scope core.ThemeScope)) {
@@ -243,4 +243,8 @@ func (a *App) setInteractionPressForTest(fn func(ids.ChannelID, ids.MessageTS, i
 
 func (a *App) setCommandRunnerForTest(fn func(string, ids.ChannelID, ids.ThreadTS, string, string) error) {
 	a.SetCommandService(core.NewCommandService(core.CommandServiceFuncs{Run: fn}))
+}
+
+func (a *App) setDraftServiceForTest(fns core.DraftServiceFuncs) {
+	a.SetDraftService(core.NewDraftService(fns))
 }

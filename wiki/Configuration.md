@@ -18,6 +18,14 @@ hide_deactivated_users = true   # hide deactivated people, as the Slack desktop
                                 # Set false to show them again. See below.
 workspace_picker_vim_keys = false  # true: :ws opens navigating: j/k move,
                                    # / starts filtering (esc clears it)
+image_loading = "trusted" # which message images load without asking:
+                          #   trusted: Slack-hosted (files.slack.com, *.slack-edge.com)
+                          #            and trusted_image_hosts load; others wait for I
+                          #   confirm: every message image waits for I
+                          #   off:     never load message images; they stay links
+                          # Avatars and custom emoji are not affected.
+trusted_image_hosts = []  # extra hosts (and their subdomains) to load in "trusted"
+                          # mode, https only, e.g. ["githubassets.com"]
 
 [appearance]
 theme = "dracula"
@@ -61,10 +69,12 @@ enabled = true
 on_mention = true
 on_dm = true
 on_keyword = ["deploy", "incident"]
+on_thread_reply = false    # true: notify for replies in threads you're subscribed to
+on_active_channel = false  # true: still notify for the channel you're viewing
 quiet_hours = "22:00-08:00"   # planned
 
 # notify_command (optional): run INSTEAD of the built-in OS notification for any
-# message that would notify (DM / mention / keyword). Executed via `sh -c` with
+# message that would notify (DM / mention / keyword / thread reply). Executed via `sh -c` with
 # $SLK_TITLE and $SLK_BODY set, so you can route notifications through your own
 # tooling (terminal-notifier, a multiplexer's notifier, mako, ...). Values are
 # passed via the environment, so message text can't inject shell syntax.
@@ -94,8 +104,13 @@ quiet_hours = "22:00-08:00"   # planned
 
 [sidebar]
 right_align_badges = false  # true: mention badges at the right end of the row (Slack),
-                            # and the Threads and Activity counts as red badges there
+                            # and the Threads, Drafts and Activity counts as red badges there
 channel_indent = 0          # cells to indent the rows under each section header (0-6)
+hide_inactive_after_days = 30  # auto-hide conversations not read for this many days;
+                               # 0 shows them all (the active channel and unread ones stay)
+sort_dms_by_recency = true  # true: order DMs and group DMs by recent activity (unread
+                            # first), as Slack does; the Direct Messages header's ⇅/A-Z
+                            # control toggles it for the session
 slack_style = false         # true: Slack's look: no ▾ on open sections, plain headers,
                             # no unread dot (bold only), names sorted ignoring punctuation
 private_glyph = "◆"         # glyph before private channels, e.g. a lock your font has
@@ -109,7 +124,7 @@ start_collapsed = false     # true: every section starts collapsed (Space/Enter
 show_unread_in_collapsed = false  # true: a collapsed section still lists its
                                   # unread channels (and the open one)
 enter_keeps_focus = false   # true: Enter opens a conversation (or Threads,
-                            # Activity, or a workspace in the rail) but keeps
+                            # Drafts, Activity, or a workspace in the rail) but keeps
                             # focus in the list, to skim with j/k; l moves on
 
 [compose]
@@ -118,6 +133,11 @@ editor = "nvim"   # Ctrl+E editor, used when $VISUAL and $EDITOR are unset
 # vim). While it's on, app Ctrl shortcuts (Ctrl+P, Ctrl+N, Ctrl+A, ...) also
 # work from an empty composer; Ctrl+W, Ctrl+H and Ctrl+K keep deleting text.
 stay_in_insert_after_send = true
+
+# Make the composer's unsent text Slack's own draft for the conversation:
+# saved while you type, restored when you open the conversation (on any
+# device), marked sent when you send. Also enables :drafts. Default true.
+sync_drafts = true
 
 [sidebar]
 mention_pills = false   # true: "↑/↓ Unread mentions" pills while a mentioned
@@ -159,6 +179,17 @@ order = 1
 [sections.Engineering]
 channels = ["eng-general:1", "eng-alerts:2", "eng-*"]
 order = 2
+collapsed = true                # start this section collapsed
+
+# The built-in sections ("Channels", "Direct Messages", "Apps") take
+# the same keys, without channels. order places one among the sections
+# above; built-ins without an order come last, in that order:
+# Direct Messages, Apps, Channels. collapsed sets whether a section
+# starts collapsed, over start_collapsed and the built-in default
+# (Channels and Apps collapsed); toggling a header still wins.
+[sections."Channels"]
+order = 0                       # before Alerts
+collapsed = false
 
 # Per-workspace settings: keyed by a slug you choose at --add-workspace
 # time. team_id ties the slug to the underlying Slack workspace.

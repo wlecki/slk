@@ -21,6 +21,7 @@ import (
 	"github.com/gammons/slk/internal/slack/mrkdwn"
 	"github.com/gammons/slk/internal/slackhttp"
 	"github.com/gammons/slk/internal/slackurl"
+	"github.com/gammons/slk/internal/ui/messages/blockkit"
 	"github.com/gorilla/websocket"
 	"github.com/slack-go/slack"
 )
@@ -166,6 +167,11 @@ type Client struct {
 	// replies responses (see roomTap). Nil for clients built directly in
 	// tests; HuddleRoom treats nil as "none captured".
 	rooms *roomStore
+
+	// botIcons holds the icons of bot messages seen in history, replies
+	// and WebSocket messages (see BotIcon). Nil for clients built directly
+	// in tests. BotIcon treats nil as "none seen".
+	botIcons *botIconStore
 }
 
 // NewClient creates a new Slack client using browser cookie auth.
@@ -175,10 +181,11 @@ func NewClient(xoxcToken, dCookie string) *Client {
 	env := slackhttp.NewEnvelope()
 	httpClient := newCookieHTTPClient(dCookie, env)
 	rooms := newRoomStore()
+	botIcons := newBotIconStore()
 	// The tap sits under BrowserTransport (as its Inner) so
 	// httpClient.Transport stays a *slackhttp.BrowserTransport.
 	if bt, ok := httpClient.Transport.(*slackhttp.BrowserTransport); ok {
-		bt.Inner = rooms.wrap(bt.Inner)
+		bt.Inner = rooms.wrap(bt.Inner, botIcons)
 	}
 
 	api := slack.New(
@@ -195,6 +202,7 @@ func NewClient(xoxcToken, dCookie string) *Client {
 		httpClient: httpClient,
 		envelope:   env,
 		rooms:      rooms,
+		botIcons:   botIcons,
 	}
 }
 
@@ -608,6 +616,7 @@ func (c *Client) StartWebSocket(handler EventHandler) error {
 				if c.wsEventGate != nil && !c.wsEventGate(message) {
 					continue
 				}
+				c.botIcons.recordFrame(message)
 				dispatchWebSocketEvent(message, handler)
 			case <-pending:
 				pendingHandler.OnPendingEvents()
@@ -1125,27 +1134,44 @@ func (c *Client) ListCustomEmoji(ctx context.Context) (map[string]string, error)
 // clients will render). Links an app publishes a Work Object for go out
 // as chips; see link_chips.go.
 func (c *Client) SendMessage(ctx context.Context, channelID, text string) (string, string, error) {
-	ts, mr, err := c.postMessage(ctx, channelID, "", text, false)
+	ts, mr, err := c.postMessage(ctx, channelID, "", text, false, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("sending message: %w", err)
 	}
 	return ts, mr, nil
 }
 
-// postMessage is SendMessage and SendReply: chat.postMessage with the
-// text converted to mrkdwn and a rich_text block, chips first.
-func (c *Client) postMessage(ctx context.Context, channelID, threadTS, text string, broadcast bool) (string, string, error) {
-	mr, block := mrkdwn.Convert(text)
-	if ts, sentMr, sent, err := c.sendWithChips(ctx, channelID, threadTS, text, broadcast, block); sent {
+// postMessage is SendMessage, SendReply and SendDraft: chat.postMessage
+// with the text converted to mrkdwn and a rich_text block, chips first.
+// ref, when not nil, names the draft the message is sent from; slack-go
+// has no option for the draft fields, so a draft's post skips slack-go
+// and goes out as the hand-rolled form the chips path already sends.
+func (c *Client) postMessage(ctx context.Context, channelID, threadTS, text string, broadcast bool, ref *DraftRef) (string, string, error) {
+	block := mrkdwn.Convert(text)
+	if block == nil {
+		return "", "", fmt.Errorf("could not convert mrkdwn to block")
+	}
+	mr := blockkit.RichTextToMrkdwn(blockkit.RichTextBlock{Elements: block.Elements})
+	extra := ref.fields()
+	if ts, sentMr, sent, err := c.sendWithChips(ctx, channelID, threadTS, text, broadcast, block, extra); sent {
 		return ts, sentMr, err
+	}
+	if ref != nil {
+		form, err := plainPostForm(channelID, threadTS, broadcast, mr, block, newClientMsgID())
+		if err != nil {
+			return "", "", err
+		}
+		for k, v := range extra {
+			form[k] = v
+		}
+		ts, err := c.postChips(ctx, form)
+		return ts, mr, err
 	}
 	opts := []slack.MsgOption{slack.MsgOptionText(mr, false)}
 	if threadTS != "" {
 		opts = append(opts, slack.MsgOptionTS(threadTS))
 	}
-	if block != nil {
-		opts = append(opts, slack.MsgOptionBlocks(block))
-	}
+	opts = append(opts, slack.MsgOptionBlocks(block))
 	if broadcast {
 		opts = append(opts, slack.MsgOptionBroadcast())
 	}
@@ -1381,7 +1407,7 @@ func sumActivityV2(m map[string]int) int {
 // thread_broadcast subtype. Returns the timestamp and the converted
 // mrkdwn text actually sent.
 func (c *Client) SendReply(ctx context.Context, channelID, threadTS, text string, broadcast bool) (string, string, error) {
-	ts, mr, err := c.postMessage(ctx, channelID, threadTS, text, broadcast)
+	ts, mr, err := c.postMessage(ctx, channelID, threadTS, text, broadcast, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("sending reply: %w", err)
 	}
@@ -1418,11 +1444,13 @@ func (c *Client) GetReplies(ctx context.Context, channelID, threadTS string) ([]
 // optimistic display, but the message-changed WS echo is the
 // authoritative source of truth for the displayed body).
 func (c *Client) EditMessage(ctx context.Context, channelID, ts, text string) (string, error) {
-	mr, block := mrkdwn.Convert(text)
-	opts := []slack.MsgOption{slack.MsgOptionText(mr, false)}
-	if block != nil {
-		opts = append(opts, slack.MsgOptionBlocks(block))
+	block := mrkdwn.Convert(text)
+	if block == nil {
+		return "", fmt.Errorf("could not convert mrkdwn to block")
 	}
+	mr := blockkit.RichTextToMrkdwn(blockkit.RichTextBlock{Elements: block.Elements})
+	opts := []slack.MsgOption{slack.MsgOptionText(mr, false)}
+	opts = append(opts, slack.MsgOptionBlocks(block))
 	_, _, _, err := c.api.UpdateMessage(channelID, ts, opts...)
 	if err != nil {
 		return "", fmt.Errorf("editing message: %w", err)

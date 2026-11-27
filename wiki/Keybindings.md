@@ -5,7 +5,7 @@
 | `j` / `k` | Normal | Move down/up in channel list or messages |
 | `h` / `l` | Normal | Switch focus between panels; `h` from the sidebar focuses the workspace rail |
 | `Tab` / `Shift+Tab` | Normal | Cycle focus |
-| `Enter` | Normal (sidebar) | Open selected channel (focus moves to the messages pane; `[sidebar] enter_keeps_focus = true` keeps it in the sidebar), or toggle a section header |
+| `Enter` | Normal (sidebar) | Open the selected channel, the Threads view, the Drafts view, or the Activity view (focus moves to the messages pane; `[sidebar] enter_keeps_focus = true` keeps it in the sidebar), or toggle a section header |
 | `j` / `k`, `Enter` | Normal (workspace rail) | Move the rail cursor; switch to that workspace |
 | `Space` | Normal (sidebar) | Toggle the selected section header (collapse/expand) |
 | `Enter` | Normal (message) | Open thread |
@@ -21,6 +21,7 @@
 | `Ctrl+V` | Insert | Smart paste — image / file path / text (use `Ctrl+V`, not the terminal's `Ctrl+Shift+V`) |
 | `Ctrl+U` | Insert | Clear compose (text + pending attachments) |
 | `Ctrl+E` | Insert | Edit the draft in `$VISUAL` / `$EDITOR` (or `compose.editor`) |
+| `Ctrl+E` | Normal | Show the currently selected message in `$VISUAL` / `$EDITOR` (or `compose.editor`) |
 | `Ctrl+O` | Insert (thread) | Toggle "also send to channel" for the next thread reply |
 | `Ctrl+R` | Insert | Show / hide the draft preview: the draft as it will look once sent, above the box. Sending or leaving the box with `Esc` closes it |
 | `Alt+Enter` | Insert (thread) | Send thread reply and broadcast to channel (one-shot) |
@@ -35,7 +36,8 @@
 | `Esc` | Normal (search active) | Clear active search |
 | `m{a-z}` | Normal (message) | Set a session mark on the selected message — lost when slk exits |
 | `m{A-Z}` | Normal (message) | Set a persistent mark — survives a restart |
-| `'{letter}` / `` `{letter} `` | Normal | Jump to a mark: opens the channel, loads history if needed, opens the thread and selects the reply |
+| `m{letter}` | Normal (sidebar) | Mark the highlighted conversation (channel or DM) — jumping to it opens the conversation at its latest message |
+| `'{letter}` / `` `{letter} `` | Normal | Jump to a mark: opens the channel, loads history if needed, opens the thread and selects the reply; a conversation mark opens at the latest message |
 | `''` / ` `` ` | Normal | Back-jump to where you jumped from; press again to return |
 | `p` | Normal (thread open) | Go to the open thread's message in its channel (closes the thread; `''` returns to it) |
 | `:marks` | Normal | List every mark in the workspace with its channel and message preview |
@@ -46,11 +48,14 @@
 | `Ctrl+g` | Normal | Toggle the workspace rail (with it hidden, the status bar shows the active workspace's initials) |
 | `Ctrl+]` | Any | Toggle thread panel |
 | `f` | Normal | Toggle fullscreen for the focused pane (channel list, messages or thread); while fullscreen, moving focus (`Tab`, `h`/`l`, `Enter`) shows the newly focused pane fullscreen, and closing a fullscreen thread yourself (`Esc`, `q`, `Ctrl+]`) returns to the panes |
+| `Enter` | Normal (drafts) | Open the highlighted draft's channel or thread, with the draft in the composer |
+| `d` | Normal (drafts) | Delete the highlighted draft (asks first) |
+| `:drafts` | Normal | Open the same drafts list as a dialog |
 | `Ctrl+a` | Normal | Toggle the Activity view (mentions, thread replies, reactions, DMs) |
 | `:activity` | Normal | Open the Activity view |
 | `u` | Normal (activity) | Toggle the Activity view's unread-only filter |
 | `U` | Normal (activity) | Toggle the selected Activity item read/unread |
-| `Ctrl+k` / `Ctrl+t` / `Ctrl+p` | Any | Fuzzy channel finder (`Ctrl+k` from normal mode only: in the composer it deletes to line end) |
+| `Ctrl+k` / `Ctrl+t` / `Ctrl+p` | Normal | Fuzzy channel finder |
 | `P` | Normal | Open a pasted Slack message link: a one-line dialog. Paste with the terminal or `Ctrl+V`; Enter opens an archive permalink (including `?thread_ts=` and an Enterprise Grid alias), Esc cancels |
 | `:ws` | Normal | Workspace picker (`[general] workspace_picker_vim_keys = true` opens it with `j`/`k` to move and `/` to filter) |
 | `Ctrl+w s` / `:sp` | Normal | Split the focused window into two, one above the other |
@@ -60,7 +65,7 @@
 | `Ctrl+w q` / `:q` | Normal | Close the focused window (not the last one) |
 | `Ctrl+w o` / `:only` (`:on`) | Normal | Close every other window |
 | `1`–`9` | Normal | Jump to workspace N |
-| `r` | Normal (message) | Open reaction picker |
+| `r` | Normal (message) | Open reaction picker (`↑`/`↓` or `Ctrl+n`/`Ctrl+p` to move) |
 | `R` | Normal (message) | Quick-toggle existing reactions |
 | `E` | Normal (message) | Edit your own message |
 | `D` | Normal (message) | Delete your own message (with confirmation) |
@@ -72,6 +77,7 @@
 | `H` / `:huddle` | Normal | Copy the huddle link of the conversation on screen (channels, DMs, group DMs; the focused thread pane, or the highlighted Threads/Activity row, names the channel) |
 | `F` | Normal (message / thread) | Forward selected message using the channel finder; Enter sends, Esc cancels |
 | `O` / `v` | Normal (message) | Open full-screen image preview. An image Slack made no thumbnail for (SVG) is downloaded and opened in the system viewer instead |
+| `I` | Normal (message) | Load images on the selected message that `image_loading` held back: shows the hosts it would contact, then `y` loads them, `a` trusts those hosts for the session |
 | `Esc` / `q` | Preview | Close preview |
 | `Enter` | Preview | Open in system image viewer |
 | `h` / `←` | Preview | Previous image (when message has multiple) |
@@ -79,7 +85,10 @@
 | Click | Any (on image) | Open full-screen preview |
 | `Ctrl+y` | Any | Switch theme |
 | `Alt+y` / `Alt+Shift+y` | Normal | Next / previous theme (wraps; saved per workspace) |
-| `Ctrl+s` | Any | Set status (Active / Away / DND snooze / Working from home / On vacation / Clear status) |
+| `Ctrl+s` | Any | Set status (Active / Away / DND snooze / Working from home / On vacation / Set a status... / Clear status) |
+| `Tab` | Set a status | Pick the status emoji; Enter in the picker returns to the dialog, Esc returns without one |
+| `Up` / `Down`, `Ctrl+p` / `Ctrl+n` | Set a status | Choose when the status clears |
+| `Enter` / `Esc` | Set a status | Set the status / cancel without changing it |
 | `q` | Normal | Close the thread pane (does nothing when none is open) |
 | `Q` | Normal | Quit (with confirmation) |
 | `Ctrl+c` | Any | Quit (with confirmation) |

@@ -27,6 +27,12 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Notifications.OnDM {
 		t.Error("expected on_dm enabled by default")
 	}
+	if cfg.Notifications.OnThreadReply {
+		t.Error("expected on_thread_reply disabled by default")
+	}
+	if cfg.Notifications.OnActiveChannel {
+		t.Error("expected on_active_channel disabled by default")
+	}
 	if cfg.Cache.MessageRetentionDays != 30 {
 		t.Errorf("expected 30 day retention, got %d", cfg.Cache.MessageRetentionDays)
 	}
@@ -510,6 +516,24 @@ func TestConfig_ComposeStayInInsertDefault(t *testing.T) {
 	}
 }
 
+func TestSyncDrafts(t *testing.T) {
+	cases := []struct {
+		name, body string
+		want       bool
+	}{
+		{"unset is on", "", true},
+		{"on", "[compose]\nsync_drafts = true\n", true},
+		{"off", "[compose]\nsync_drafts = false\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := loadConfigString(t, tc.body).EffectiveSyncDrafts(); got != tc.want {
+				t.Errorf("EffectiveSyncDrafts = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestConfig_ComposeStayInInsertExplicit(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -805,13 +829,13 @@ team_id = "not-a-real-id"
 func TestMatchSectionWorkspaceOverride(t *testing.T) {
 	c := Config{
 		Sections: map[string]SectionDef{
-			"GlobalEng": {Channels: []string{"eng-*"}, Order: 1},
+			"GlobalEng": {Channels: []string{"eng-*"}, Order: new(1)},
 		},
 		Workspaces: map[string]Workspace{
 			"work": {
 				TeamID: "T01",
 				Sections: map[string]SectionDef{
-					"WorkAlerts": {Channels: []string{"alerts"}, Order: 1},
+					"WorkAlerts": {Channels: []string{"alerts"}, Order: new(1)},
 				},
 			},
 		},
@@ -830,7 +854,7 @@ func TestMatchSectionWorkspaceOverride(t *testing.T) {
 func TestMatchSectionWorkspaceFallsBackToGlobal(t *testing.T) {
 	c := Config{
 		Sections: map[string]SectionDef{
-			"GlobalEng": {Channels: []string{"eng-*"}, Order: 1},
+			"GlobalEng": {Channels: []string{"eng-*"}, Order: new(1)},
 		},
 		Workspaces: map[string]Workspace{
 			"side": {TeamID: "T02"}, // no per-workspace sections
@@ -844,7 +868,7 @@ func TestMatchSectionWorkspaceFallsBackToGlobal(t *testing.T) {
 func TestMatchSectionUnknownTeamID(t *testing.T) {
 	c := Config{
 		Sections: map[string]SectionDef{
-			"GlobalEng": {Channels: []string{"eng-*"}, Order: 1},
+			"GlobalEng": {Channels: []string{"eng-*"}, Order: new(1)},
 		},
 	}
 	if got := c.MatchSection("Tnope", "eng-foo"); got != "GlobalEng" {
@@ -855,7 +879,7 @@ func TestMatchSectionUnknownTeamID(t *testing.T) {
 func TestMatchSectionEmptyTeamID(t *testing.T) {
 	c := Config{
 		Sections: map[string]SectionDef{
-			"GlobalEng": {Channels: []string{"eng-*"}, Order: 1},
+			"GlobalEng": {Channels: []string{"eng-*"}, Order: new(1)},
 		},
 	}
 	if got := c.MatchSection("", "eng-foo"); got != "GlobalEng" {
@@ -1043,7 +1067,7 @@ func TestConfig_SidebarSlackOptions(t *testing.T) {
 func TestMatchSectionAndOrder_ExplicitOrder(t *testing.T) {
 	c := Config{
 		Sections: map[string]SectionDef{
-			"Eng": {Channels: []string{"eng-general:1", "eng-alerts:2"}, Order: 1},
+			"Eng": {Channels: []string{"eng-general:1", "eng-alerts:2"}, Order: new(1)},
 		},
 	}
 	if section, order := c.MatchSectionAndOrder("", "eng-general"); section != "Eng" || order != 1 {
@@ -1057,7 +1081,7 @@ func TestMatchSectionAndOrder_ExplicitOrder(t *testing.T) {
 func TestMatchSectionAndOrder_NoOrderDefaultsZero(t *testing.T) {
 	c := Config{
 		Sections: map[string]SectionDef{
-			"Eng": {Channels: []string{"eng-general"}, Order: 1},
+			"Eng": {Channels: []string{"eng-general"}, Order: new(1)},
 		},
 	}
 	if section, order := c.MatchSectionAndOrder("", "eng-general"); section != "Eng" || order != 0 {
@@ -1068,7 +1092,7 @@ func TestMatchSectionAndOrder_NoOrderDefaultsZero(t *testing.T) {
 func TestMatchSectionAndOrder_GlobPattern(t *testing.T) {
 	c := Config{
 		Sections: map[string]SectionDef{
-			"Team": {Channels: []string{"team-*:5"}, Order: 1},
+			"Team": {Channels: []string{"team-*:5"}, Order: new(1)},
 		},
 	}
 	if section, order := c.MatchSectionAndOrder("", "team-alpha"); section != "Team" || order != 5 {
@@ -1083,7 +1107,7 @@ func TestMatchSectionAndOrder_NonNumericSuffixTreatedAsLiteral(t *testing.T) {
 	// literally configures such a pattern; we don't error on it.
 	c := Config{
 		Sections: map[string]SectionDef{
-			"Misc": {Channels: []string{"weird:abc"}, Order: 1},
+			"Misc": {Channels: []string{"weird:abc"}, Order: new(1)},
 		},
 	}
 	// The literal pattern matches the literal string "weird:abc".
@@ -1099,7 +1123,7 @@ func TestMatchSectionAndOrder_NonNumericSuffixTreatedAsLiteral(t *testing.T) {
 func TestMatchSectionAndOrder_NoMatchReturnsEmpty(t *testing.T) {
 	c := Config{
 		Sections: map[string]SectionDef{
-			"Eng": {Channels: []string{"eng-*:1"}, Order: 1},
+			"Eng": {Channels: []string{"eng-*:1"}, Order: new(1)},
 		},
 	}
 	if section, order := c.MatchSectionAndOrder("", "random"); section != "" || order != 0 {
@@ -1112,7 +1136,7 @@ func TestMatchSection_BackwardCompatWithOrderSuffix(t *testing.T) {
 	// new ":N" suffix syntax — it just discards the order.
 	c := Config{
 		Sections: map[string]SectionDef{
-			"Eng": {Channels: []string{"eng-general:3"}, Order: 1},
+			"Eng": {Channels: []string{"eng-general:3"}, Order: new(1)},
 		},
 	}
 	if got := c.MatchSection("", "eng-general"); got != "Eng" {
@@ -1123,13 +1147,13 @@ func TestMatchSection_BackwardCompatWithOrderSuffix(t *testing.T) {
 func TestMatchSectionAndOrder_WorkspaceOverride(t *testing.T) {
 	c := Config{
 		Sections: map[string]SectionDef{
-			"GlobalEng": {Channels: []string{"eng-*:1"}, Order: 1},
+			"GlobalEng": {Channels: []string{"eng-*:1"}, Order: new(1)},
 		},
 		Workspaces: map[string]Workspace{
 			"work": {
 				TeamID: "T01",
 				Sections: map[string]SectionDef{
-					"WorkAlerts": {Channels: []string{"alerts:7"}, Order: 1},
+					"WorkAlerts": {Channels: []string{"alerts:7"}, Order: new(1)},
 				},
 			},
 		},
@@ -1318,6 +1342,16 @@ func TestHideDeactivatedUsersPartialGeneralBlockKeepsDefault(t *testing.T) {
 	}
 }
 
+func TestSidebarSortDMsByRecency(t *testing.T) {
+	if !Default().Sidebar.SortDMsByRecency {
+		t.Error("default should be on")
+	}
+	cfg := loadConfigString(t, "[sidebar]\nsort_dms_by_recency = false\n")
+	if cfg.Sidebar.SortDMsByRecency {
+		t.Error("sort_dms_by_recency = false did not load")
+	}
+}
+
 func TestSidebarStartCollapsed(t *testing.T) {
 	if Default().Sidebar.StartCollapsed {
 		t.Error("default should be off")
@@ -1325,6 +1359,57 @@ func TestSidebarStartCollapsed(t *testing.T) {
 	cfg := loadConfigString(t, "[sidebar]\nstart_collapsed = true\n")
 	if !cfg.Sidebar.StartCollapsed {
 		t.Error("start_collapsed = true did not load")
+	}
+}
+
+func TestSectionsCollapsedAndBuiltinOrder(t *testing.T) {
+	cfg := loadConfigString(t, `
+[sections."Channels"]
+order = -1
+collapsed = false
+
+[sections."Alerts"]
+channels = ["alerts-*"]
+order = 2
+collapsed = true
+
+[sections."Direct Messages"]
+order = 1
+
+[workspaces.work]
+team_id = "T01ABCDEF"
+
+[workspaces.work.sections."Apps"]
+collapsed = false
+`)
+
+	global := cfg.SectionsFor("T09OTHER")
+	if c := global["Channels"].Collapsed; c == nil || *c {
+		t.Errorf("Channels collapsed = %v, want false", c)
+	}
+	if c := global["Alerts"].Collapsed; c == nil || !*c {
+		t.Errorf("Alerts collapsed = %v, want true", c)
+	}
+	if c := global["Direct Messages"].Collapsed; c != nil {
+		t.Errorf("Direct Messages collapsed = %v, want unset", *c)
+	}
+	if got := cfg.SectionOrder("T09OTHER", "Channels"); got != -1 {
+		t.Errorf("Channels order = %d, want -1", got)
+	}
+
+	if name, _ := cfg.MatchSectionAndOrder("T09OTHER", "general"); name != "" {
+		t.Errorf("a built-in entry without channels matched general into %q", name)
+	}
+
+	ws := cfg.SectionsFor("T01ABCDEF")
+	if _, ok := ws["Channels"]; ok || len(ws) != 1 {
+		t.Errorf("workspace sections = %v, want only Apps", ws)
+	}
+	if o := ws["Apps"].Order; o != nil {
+		t.Errorf("Apps order = %d, want unset", *o)
+	}
+	if got := cfg.SectionOrder("T01ABCDEF", "Apps"); got != 0 {
+		t.Errorf("SectionOrder of an entry without order = %d, want 0", got)
 	}
 }
 
@@ -1361,6 +1446,25 @@ func TestConfig_ClickOpensThread(t *testing.T) {
 	}
 }
 
+func TestImageLoading(t *testing.T) {
+	for body, want := range map[string]string{
+		"":                                     "trusted",
+		"[general]\ndownload_dir = \"/\"\n":    "trusted",
+		"[general]\nimage_loading = \"off\"\n": "off",
+		"[general]\nimage_loading = \"Confirm\"\n": "confirm",
+		// A typo takes the strict side rather than loading images.
+		"[general]\nimage_loading = \"of\"\n": "confirm",
+	} {
+		if got := loadConfigString(t, body).General.ImageLoading; got != want {
+			t.Errorf("%q: image_loading = %q, want %q", body, got, want)
+		}
+	}
+	cfg := loadConfigString(t, "[general]\ntrusted_image_hosts = [\"githubassets.com\"]\n")
+	if got := cfg.General.TrustedImageHosts; len(got) != 1 || got[0] != "githubassets.com" {
+		t.Errorf("trusted_image_hosts = %v", got)
+	}
+}
+
 func TestResolveDefaultChannel(t *testing.T) {
 	c := Config{Workspaces: map[string]Workspace{
 		"acme": {TeamID: "T01", DefaultChannel: " #42_all "},
@@ -1382,5 +1486,19 @@ func TestConfig_DefaultChannel(t *testing.T) {
 	cfg := loadConfigString(t, "[workspaces.acme]\nteam_id = \"T01ABCDEF\"\ndefault_channel = \"#general\"\n")
 	if got := cfg.ResolveDefaultChannel("T01ABCDEF"); got != "#general" {
 		t.Errorf("default_channel = %q, want #general", got)
+	}
+}
+
+func TestLoad_NotificationsThreadAndActiveChannel(t *testing.T) {
+	cfg := loadConfigString(t, "[notifications]\non_thread_reply = true\non_active_channel = true\n")
+
+	if !cfg.Notifications.OnThreadReply {
+		t.Error("on_thread_reply = true should load")
+	}
+	if !cfg.Notifications.OnActiveChannel {
+		t.Error("on_active_channel = true should load")
+	}
+	if !cfg.Notifications.OnMention || !cfg.Notifications.OnDM {
+		t.Error("setting the new keys should not reset the other defaults")
 	}
 }

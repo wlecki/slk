@@ -30,8 +30,11 @@ import (
 	"github.com/gammons/slk/internal/slackurl"
 	"github.com/gammons/slk/internal/ui/activityview"
 	"github.com/gammons/slk/internal/ui/apphome"
+	"github.com/gammons/slk/internal/ui/appview"
 	"github.com/gammons/slk/internal/ui/channelfinder"
 	"github.com/gammons/slk/internal/ui/compose"
+	"github.com/gammons/slk/internal/ui/draftlist"
+	"github.com/gammons/slk/internal/ui/draftsview"
 	"github.com/gammons/slk/internal/ui/emojipicker"
 	"github.com/gammons/slk/internal/ui/help"
 	"github.com/gammons/slk/internal/ui/imgrender"
@@ -74,6 +77,8 @@ type View int
 const (
 	ViewChannels View = iota
 	ViewThreads
+	// ViewDrafts swaps the pane's contents for the workspace's drafts.
+	ViewDrafts
 	// ViewActivity swaps the pane's contents for the Activity feed
 	// (mentions, thread replies, reactions to your messages, DMs).
 	ViewActivity
@@ -146,6 +151,7 @@ type App struct {
 	threadPanel      *thread.Model
 	threadCompose    compose.Model
 	threadsView      threadsview.Model
+	draftsView       draftsview.Model
 	activityView     activityview.Model
 	// appHome is the Home tab of the app DM on screen, shown in place of
 	// the messages pane while view is ViewAppHome. appHomeChannelID is
@@ -564,6 +570,22 @@ type App struct {
 	// (shownPromptThread: over the thread composer), so closing it puts
 	// the user back to typing.
 	shownPromptInsert, shownPromptThread bool
+	// appViewBehind records that a chooser is open over the app dialog:
+	// the dialog is drawn behind it, and returns when the chooser
+	// closes. keepAppView lets that mode change skip closeModal's
+	// clearing of the dialog.
+	appViewBehind bool
+	keepAppView   bool
+	// appView is the modal an app opened for the user (see
+	// internal/ui/appview); appViewSvc refreshes it and presses its
+	// buttons. appViewGen numbers the inline content installed, so a
+	// fetch started before a newer frame is discarded; the fetch fields
+	// order fetches among themselves.
+	appView          appview.Model
+	appViewSvc       core.AppViewService
+	appViewGen       uint64
+	appViewFetchSeq  uint64
+	appViewFetchDone uint64
 	// actionQueue holds ephemerals with buttons waiting for the action
 	// dialog, oldest first; promptToasted records which have shown the
 	// "press b" toast, so it appears once per message.
@@ -592,10 +614,15 @@ type App struct {
 	// reactions on Slack + load/record frecent emoji history). See
 	// internal/ui/services.go. Defaulted to a no-op adapter in NewApp
 	// so call sites can dispatch without nil-checks.
-	reactions     core.ReactionService
-	interactions  core.InteractionService
-	commandSvc    core.CommandService
-	appHomeSvc    core.AppHomeService
+	reactions    core.ReactionService
+	interactions core.InteractionService
+	commandSvc   core.CommandService
+	appHomeSvc   core.AppHomeService
+	// draftSvc is the App's DraftService collaborator (drafts.go). nil
+	// when draft sync is off: no draft calls are made, drafts stay in
+	// memory only, and :drafts refuses.
+	draftSvc      core.DraftService
+	drafts        *draftSync
 	currentUserID string
 
 	// editing tracks in-progress message edit state. See
@@ -662,6 +689,18 @@ type App struct {
 	slackLinkInput string
 	slackLinkError string
 
+	// statusDialog is the Ctrl+S "Set a status..." dialog.
+	// statusEmojiPick is set while the reaction picker is open on its
+	// behalf, so the pick goes back to the dialog instead of a message.
+	statusDialog    presencemenu.StatusDialog
+	statusEmojiPick bool
+	// recentStatuses is the last good recent-status list per team ID,
+	// shown at once when Ctrl+S opens while a fresh fetch runs.
+	recentStatuses map[string][]core.RecentStatus
+	// recentStatusSeq numbers recent-status fetches; replies to all
+	// but the latest are dropped.
+	recentStatusSeq int
+
 	// marks owns the vim-style mark storage: an in-memory per-workspace
 	// tier for lowercase marks plus the SQLite `marks` table, merged
 	// behind one set of accessors (see internal/ui/marks.go).
@@ -671,6 +710,13 @@ type App struct {
 	// row per mark, rendered from the stored preview snapshot, opened
 	// by the ' chord and the :marks command.
 	marksOverlay marks.Model
+
+	// draftList is the :drafts dialog (internal/ui/draftlist/): one row
+	// per draft in the active workspace, newest first. draftListItems
+	// keeps the drafts in the order shown, so a key acts on the row it
+	// highlights.
+	draftList      draftlist.Model
+	draftListItems []core.Draft
 
 	// showJumpOverlay is the [marks] show_jump_overlay option: whether
 	// beginning a jump (' ) shows the marks list. Defaults to on; the
@@ -1032,8 +1078,10 @@ func NewApp() *App {
 		threadPanel:           thread.New(),
 		threadCompose:         compose.New("thread"),
 		threadsView:           threadsview.New(nil, ""),
+		draftsView:            draftsview.New(),
 		activityView:          activityview.New(nil, ""),
 		appHome:               apphome.New(),
+		appView:               appview.New(),
 		linkPicker:            linkpicker.New(),
 		reactionPicker:        reactionpicker.New(),
 		reactionsView:         reactionsview.New(),
@@ -1068,6 +1116,7 @@ func NewApp() *App {
 		interactions:          noopInteractionService,
 		commandSvc:            noopCommandService,
 		appHomeSvc:            noopAppHomeService,
+		appViewSvc:            noopAppViewService,
 		threads:               noopThreadService,
 		activity:              noopActivityService,
 		messageSvc:            noopMessageService,
@@ -1081,6 +1130,8 @@ func NewApp() *App {
 		navHistory:            newNavHistoryStore(),
 		marks:                 newMarksStore(),
 		marksOverlay:          marks.New(),
+		draftList:             draftlist.New(),
+		drafts:                newDraftSync(),
 		suppression:           noopSuppressionService,
 		suppressList:          suppresslist.New(),
 		showJumpOverlay:       true,
@@ -1109,6 +1160,7 @@ func NewApp() *App {
 	// before the first workspace finishes loading customs.
 	app.compose.SetEmojiEntries(emoji.BuildEntries(nil))
 	app.threadCompose.SetEmojiEntries(emoji.BuildEntries(nil))
+	app.wireSlashCompletion()
 	// Seed the channel finder with the "Threads" view shortcut so users
 	// can jump to the threads-list view from the same overlay they use
 	// to switch channels (ctrl+t / ctrl+p). Selecting this row dispatches
@@ -1294,13 +1346,17 @@ func (a *App) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		reduceReactions,
 		reduceThreads,
 		reduceActivity,
+		reduceRecentStatuses,
 		reduceAppHome,
+		reduceAppView,
 		reduceFocus,
 		reduceSend,
 		reduceRemovePreview,
+		reduceLoadImages,
 		reduceSuppress,
 		reduceActionPrompt,
 		reduceSlashCommand,
+		reduceDrafts,
 		reduceChannels,
 		reduceLinks,
 		reduceFiles,
@@ -1686,6 +1742,14 @@ func (a *App) toggleReactionOnMessageItem(channelIDStr string, msg messages.Mess
 // copyMessageOfSelected copies the text of the currently-selected message or
 // thread reply to the system clipboard and emits a status-bar toast.
 func (a *App) copyMessageOfSelected() tea.Cmd {
+	if a.view == ViewActivity && a.focusedPanel == PanelMessages {
+		if body, ok := a.activityView.SelectedBody(); ok {
+			return a.copyMessageText(messages.MessageCopyText(messages.MessageItem{
+				Text: body.Text, UserID: body.UserID,
+			}))
+		}
+		return a.activityBodyNotLoadedCmd()
+	}
 	p, _, ok := a.focusedContentPane()
 	if !ok {
 		return nil
@@ -1694,8 +1758,23 @@ func (a *App) copyMessageOfSelected() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	return a.copyMessageText(messages.MessageCopyText(msg))
+}
 
-	text := messages.MessageCopyText(msg)
+// activityBodyNotLoadedCmd answers y/o on an Activity card whose body has
+// not been fetched yet. The card is selected but there is nothing to copy
+// or open, so say so rather than doing nothing.
+func (a *App) activityBodyNotLoadedCmd() tea.Cmd {
+	if _, ok := a.activityView.SelectedItem(); ok {
+		return func() tea.Msg { return ToastMsg{Text: "Message not loaded yet"} }
+	}
+	return nil
+}
+
+// copyMessageText writes text to the clipboard and reports the count;
+// empty text is refused with a toast. Shared by the selected pane
+// message and the selected Activity card.
+func (a *App) copyMessageText(text string) tea.Cmd {
 	if text == "" {
 		return func() tea.Msg { return ToastMsg{Text: "Message has no text"} }
 	}
@@ -1755,6 +1834,12 @@ func (a *App) copyPermalinkOfSelected() tea.Cmd {
 // open the link picker modal. All opens converge on OpenLinkMsg,
 // the single routing point in reducer_links.go.
 func (a *App) openLinksOfSelected() tea.Cmd {
+	if a.view == ViewActivity && a.focusedPanel == PanelMessages {
+		if body, ok := a.activityView.SelectedBody(); ok {
+			return a.openLinkList(messages.ExtractLinks(body.Text))
+		}
+		return a.activityBodyNotLoadedCmd()
+	}
 	p, _, ok := a.focusedContentPane()
 	if !ok {
 		return nil
@@ -1763,7 +1848,12 @@ func (a *App) openLinksOfSelected() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	links := messages.MessageLinks(msg)
+	return a.openLinkList(messages.MessageLinks(msg))
+}
+
+// openLinkList shows the picked links: 0 -> toast, 1 -> open directly,
+// 2+ -> the link picker. All opens converge on OpenLinkMsg.
+func (a *App) openLinkList(links []messages.Link) tea.Cmd {
 	switch len(links) {
 	case 0:
 		return func() tea.Msg { return ToastMsg{Text: "No links in message"} }
@@ -1909,6 +1999,10 @@ func (a *App) handleDown() tea.Cmd {
 			// don't fire one conversations.replies call per row.
 			return a.openSelectedThreadCmd(true)
 		}
+		if a.view == ViewDrafts {
+			a.draftsView.MoveDown()
+			return nil
+		}
 		if a.view == ViewActivity {
 			a.activityView.MoveDown()
 			return nil
@@ -1935,6 +2029,10 @@ func (a *App) handleUp() tea.Cmd {
 			a.threadsView.MoveUp()
 			// k: same debounce as j — see handleDown.
 			return a.openSelectedThreadCmd(true)
+		}
+		if a.view == ViewDrafts {
+			a.draftsView.MoveUp()
+			return nil
 		}
 		if a.view == ViewActivity {
 			a.activityView.MoveUp()
@@ -2062,6 +2160,10 @@ func (a *App) handleGoToTop() tea.Cmd {
 			// gg is a one-shot jump — fire the fetch immediately.
 			return a.openSelectedThreadCmd(false)
 		}
+		if a.view == ViewDrafts {
+			a.draftsView.GoToTop()
+			return nil
+		}
 		if a.view == ViewActivity {
 			a.activityView.GoToTop()
 			return nil
@@ -2089,6 +2191,10 @@ func (a *App) handleGoToBottom() tea.Cmd {
 			a.threadsView.GoToBottom()
 			// G is a one-shot jump — fire the fetch immediately.
 			return a.openSelectedThreadCmd(false)
+		}
+		if a.view == ViewDrafts {
+			a.draftsView.GoToBottom()
+			return nil
 		}
 		if a.view == ViewActivity {
 			a.activityView.GoToBottom()
@@ -2166,6 +2272,12 @@ func (a *App) scrollFocusedPanel(delta int) tea.Cmd {
 				a.threadsView.ScrollUp(n)
 			} else {
 				a.threadsView.ScrollDown(n)
+			}
+		} else if a.view == ViewDrafts {
+			if delta < 0 {
+				a.draftsView.ScrollUp(n)
+			} else {
+				a.draftsView.ScrollDown(n)
 			}
 		} else if a.view == ViewActivity {
 			if delta < 0 {
@@ -2272,6 +2384,9 @@ func (a *App) handleEnter() tea.Cmd {
 		if a.sidebar.IsThreadsSelected() {
 			return func() tea.Msg { return ThreadsViewActivatedMsg{KeepFocus: keep} }
 		}
+		if a.sidebar.IsDraftsSelected() {
+			return func() tea.Msg { return DraftsViewActivatedMsg{KeepFocus: keep} }
+		}
 		if a.sidebar.IsActivitySelected() {
 			return func() tea.Msg { return ActivityViewActivatedMsg{KeepFocus: keep} }
 		}
@@ -2306,6 +2421,10 @@ func (a *App) handleEnter() tea.Cmd {
 	// messages-pane slot renders the activityView model, so route the
 	// selection explicitly rather than falling through to the channel
 	// message pane below.
+	if a.focusedPanel == PanelMessages && a.view == ViewDrafts {
+		return a.openSelectedDraft()
+	}
+
 	if a.focusedPanel == PanelMessages && a.view == ViewActivity {
 		it, ok := a.activityView.SelectedItem()
 		if !ok {
@@ -2509,6 +2628,12 @@ func (a *App) SetMode(mode Mode) {
 	if a.mode != mode {
 		a.closeModal(a.mode)
 	}
+	if mode != ModeConfirm {
+		// Any mode but the confirm prompt ends a chooser that was
+		// open over the app dialog; afterConfirmPrompt is the one path
+		// that returns to the dialog and clears this itself.
+		a.appViewBehind = false
+	}
 	a.mode = mode
 	a.statusbar.SetMode(mode)
 }
@@ -2522,6 +2647,11 @@ func (a *App) closeModal(mode Mode) {
 		a.channelFinder.Close()
 	case ModeReactionPicker:
 		a.reactionPicker.Close()
+		// Still set means the picker is closing some other way than
+		// back into the status dialog (e.g. ctrl+c), so the dialog goes too.
+		if a.statusEmojiPick {
+			a.closeStatusDialog()
+		}
 	case ModeWorkspaceFinder:
 		a.workspaceFinder.Close()
 	case ModeThemeSwitcher:
@@ -2549,11 +2679,27 @@ func (a *App) closeModal(mode Mode) {
 		a.userProfile.Close()
 	case ModeMarks:
 		a.marksOverlay.Close()
+	case ModeDrafts:
+		a.draftList.Close()
 	case ModeSuppressed:
 		a.suppressList.Close()
 	case ModeOpenSlackLink:
 		a.slackLinkInput = ""
 		a.slackLinkError = ""
+	case ModeStatusDialog:
+		// Tab hands over to the emoji picker; the dialog waits behind it.
+		if !a.statusEmojiPick {
+			a.closeStatusDialog()
+		}
+	case ModeAppView:
+		// A button chooser changes mode while staying over the dialog;
+		// it asks for the content to be kept. Every other exit drops
+		// the dialog (a stale fetch is ignored once it is gone).
+		if a.keepAppView {
+			a.keepAppView = false
+		} else {
+			a.appView.Clear()
+		}
 	}
 }
 
@@ -3449,6 +3595,7 @@ func (a *App) SetEmojiContext(ctx messages.EmojiContext) {
 	a.threadPanel.SetEmojiContext(ctx)
 	a.sidebar.SetEmojiContext(ctx)
 	a.channelFinder.SetEmojiContext(ctx)
+	a.presenceMenu.SetEmojiContext(ctx)
 	a.reactionPicker.SetEmojiContext(reactionpicker.EmojiContext{
 		PlaceCtx: ctx.PlaceCtx,
 		Cells:    ctx.Cells,
@@ -3521,6 +3668,19 @@ func (a *App) cycleImagePreviewCmd(channel, ts string, currentIdx, delta int) te
 	}
 	pos = (pos + delta + len(imageIdxs)) % len(imageIdxs)
 	nextAttIdx := imageIdxs[pos]
+	// A sibling the load policy holds back is not fetched silently. The
+	// gated fetch would be refused, and previewErrorMsg only dismisses a
+	// *loading* overlay, so the image already on screen would stay up
+	// with no explanation. Ask instead, as the first open does
+	// (imagepreview.go), closing the preview first so the prompt is not
+	// drawn underneath it. Approving reopens it on this sibling, so the
+	// closing is invisible to a user who says yes.
+	if previewHeld(a.imageCtx.Policy, msgItem, nextAttIdx) {
+		a.preview.Close()
+		return a.promptLoadImagesForPreview(msgItem, messages.OpenImagePreviewMsg{
+			Channel: channel, TS: ts, AttIdx: nextAttIdx,
+		})
+	}
 	return a.previewFetchCmd(channel, ts, nextAttIdx, true)
 }
 
@@ -3576,6 +3736,7 @@ func (a *App) previewFetchCmd(channel, ts string, attIdx int, cycle bool) tea.Cm
 			Key:    fileID + "-preview",
 			URL:    url,
 			Target: target,
+			Gated:  true,
 		})
 		if err != nil {
 			return previewErrorMsg{Err: err}
@@ -3837,6 +3998,7 @@ func (a *App) SetCustomEmoji(customs map[string]string) {
 	a.threadPanel.SetEmojiCustoms(customs)
 	a.sidebar.SetEmojiCustoms(customs)
 	a.channelFinder.SetEmojiCustoms(customs)
+	a.presenceMenu.SetEmojiCustoms(customs)
 	a.reactionPicker.SetEmojiCustoms(customs)
 	// Compose autocomplete dropdowns (main + thread) also need the
 	// customs map for View()-time URL resolution; without this, custom
@@ -3899,6 +4061,15 @@ func (a *App) SetAppHomeService(s core.AppHomeService) {
 		s = noopAppHomeService
 	}
 	a.appHomeSvc = s
+}
+
+// SetAppViewService wires the service that refreshes an app modal and
+// presses its buttons. A nil s restores the no-op, which refuses both.
+func (a *App) SetAppViewService(s core.AppViewService) {
+	if s == nil {
+		s = noopAppViewService
+	}
+	a.appViewSvc = s
 }
 
 // SetProfileService wires the App's ProfileService collaborator, used
@@ -4108,10 +4279,11 @@ func (a *App) SetChannelIndent(n int) {
 
 // SidebarStyle is the [sidebar] look and behaviour switches.
 type SidebarStyle struct {
-	Slack        bool   // slack_style
-	PrivateGlyph string // private_glyph
-	ActiveOnly   bool   // active_only
-	MouseResize  bool   // mouse_resize
+	Slack            bool   // slack_style
+	PrivateGlyph     string // private_glyph
+	ActiveOnly       bool   // active_only
+	MouseResize      bool   // mouse_resize
+	SortDMsByRecency bool   // sort_dms_by_recency
 }
 
 // SetSidebarStyle applies the [sidebar] switches.
@@ -4119,6 +4291,7 @@ func (a *App) SetSidebarStyle(s SidebarStyle) {
 	a.sidebar.SetSlackStyle(s.Slack)
 	a.sidebar.SetPrivateGlyph(s.PrivateGlyph)
 	a.sidebar.SetActiveOnly(s.ActiveOnly)
+	a.sidebar.SetSortDMsByRecency(s.SortDMsByRecency)
 	a.sidebarMouseResize = s.MouseResize
 }
 
@@ -4329,7 +4502,7 @@ func (a *App) collectSixelPlacements(frame panelLayoutFrame) []imgpkg.SixelPlace
 	}
 	var out []imgpkg.SixelPlacement
 	// The channel windows draw messages only in the channels view; the
-	// Threads and Activity views put their lists there instead. The
+	// Threads, Drafts and Activity views put their lists there instead. The
 	// thread pane is drawn the same in every view, so it is not gated.
 	if a.view == ViewChannels && frame.MsgWidth > 0 {
 		// The same bounds renderWindowsRegion uses, so leaf rectangles
